@@ -1,0 +1,17 @@
+node_modules/
+.DS_Store
+*.log
+.env
+.env.*
+coverage/
+*.tgz
+
+# a data folder kept inside a checkout (--data-dir ./data): the logins, keys and Chrome profiles in it must never be committed
+/data/
+config.json
+deepseek_session.json
+gemini_session.json
+gemini_settings.json
+usage-*.json
+deepseek-chrome/
+gemini-chrome/

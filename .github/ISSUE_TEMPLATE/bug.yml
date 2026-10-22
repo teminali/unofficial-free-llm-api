@@ -1,0 +1,23 @@
+name: Bug report
+description: Something in the server, the API or the web interface is wrong
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What you did and what happened
+      description: The request (with the model, without any prompt you would not share) and the answer or error.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+  - type: input
+    id: version
+    attributes:
+      label: Version and Node.js version
+      placeholder: 0.1.0, Node 22.12
+  - type: markdown
+    attributes:
+      value: Never paste tokens, cookies, API keys or the contents of your data folder.

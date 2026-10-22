@@ -1,0 +1,34 @@
+name: A provider stopped working
+description: DeepSeek or Gemini used to work and now does not
+labels: [provider-broke]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Sites change without notice, so this will happen. The most useful thing you can attach is the log lines from `ULA_DEBUG=1`.
+        They carry names and sizes, never prompts or tokens. **Do not paste tokens, cookies, emails or your data folder.**
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Provider
+      options: [DeepSeek, Gemini, Both]
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: The error message, the status code, and whether the provider's own website still works in your browser.
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Log lines
+      description: Output of `ULA_DEBUG=1 unofficial-llm-api` around the failure.
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: Version, Node.js and Chrome versions
+      placeholder: 0.1.0, Node 22.12, Chrome 130

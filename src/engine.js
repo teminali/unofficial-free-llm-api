@@ -1,0 +1,396 @@
+/**
+ * The chat engine: one OpenAI-style chat completion, answered by one provider's web chat.
+ *
+ * The caller (server.js) has already checked the key and chosen the provider and the model. This turns the request into one prompt (bridge.js), asks the
+ * provider's web client for the answer, and writes the reply as an OpenAI chat.completion (or as server-sent chunks, with reasoning_content for a model that
+ * thinks and tool_calls for a call). A web chat answers one message at a time, so every request is a fresh chat that is given the whole conversation; the
+ * provider's client deletes it afterwards where it can.
+ *
+ * What it adds on top of a plain relay, because a personal account is not an API:
+ *  - the governor decides first: a cooldown, the daily cap and a full queue are answered at once with 429 and Retry-After, and nothing goes upstream;
+ *  - a provider that refuses (rate limit, mute, human check) or signs out ends the request in one plain error and sets the pause, with no retry;
+ *  - a reply that came back empty is asked for once more, a tool call that was cut off is asked for once more in a form that fits, and then it is said;
+ *  - a model marked `escalate` can hand ONE hard question to the provider's thinking mode (see THINK_TOOL), only when the request offers tools;
+ *  - an agent that repeats the same step is stopped before another call is spent on it.
+ * Nothing but metadata is ever logged.
+ */
+'use strict';
+
+const crypto = require('crypto');
+const { sendJson, sendError } = require('./http_util');
+const { MAX_QUEUE } = require('./governor');
+const B = require('./bridge');
+
+const EMPTY_ANSWER_ATTEMPTS = 2; // one retry when the chat answers with nothing
+const MAX_CALL_MS = 15 * 60 * 1000; // the most one call may take, however much it streams
+const MAX_THINKS = 2; // thoughts one TASK (everything an agent does for one message of the person) may use
+const MAX_TASKS_KEPT = 24;
+
+/** The request an `escalate` model can make to think hard: the engine answers it itself (the client never sees it). */
+const THINK_TOOL = {
+  type: 'function',
+  function: {
+    name: 'think',
+    description: 'Hand ONE question to a slower reasoning model and get its answer back (it can take up to two minutes). Use it for design and planning decisions (how to structure a new project, which stack and design direction to take, what to avoid) and for a bug that keeps coming back. Never use it to write files or run commands: do those yourself afterwards. Put everything it needs to know in the question, including every requirement the person gave.',
+    parameters: { type: 'object', properties: { question: { type: 'string', description: 'The one question, with the facts it needs.' } }, required: ['question'] }
+  }
+};
+const NO_THOUGHT = 'The reasoning model gave no answer in time (its replies end after about two minutes). Decide with what you know and keep each step small: call a tool now.';
+const NO_MORE_THOUGHT = 'No more thinking is available in this step. Decide with what you have and act: call a tool now.';
+const thinkHint = (question) => `Think carefully about the question below and answer it. Do not call any tool and do not write files: give a clear, concrete answer, in at most 400 words, that the assistant can act on.\n\nQUESTION:\n${question}`;
+const REPAIR_NOTE = '\n\nNOTE: your last reply was a tool call that could not be read: it was cut off, or the quotes and line breaks inside it were not escaped. Reply again with only the corrected JSON object, in one fenced code block.';
+const CUT_NOTE = '\n\nNOTE: your last reply was a tool call that was cut off before its end (a reply holds about 20,000 characters), so nothing was done. Reply again with the same kind of tool call, but keep it under 15,000 characters: write a big page as several files, or in parts (the first part with write, then the rest with edit calls that add to the end of the file).';
+
+const estimateTokens = (chars) => Math.ceil(Number(chars || 0) / 4);
+
+/** A call counts against the account when its message went out: an answer, a refusal, or a caller who left after the send. Not a refused sign-in, not a caller who left first. */
+function counts(result) { return !result.authExpired && (!result.cancelled || result.sent === true); }
+
+/**
+ * createChatEngine({ provider, governor, log, onNotice })
+ * `provider`: { id, name, web: { completeOnce({ prompt, thinking, signal, model, thinkingLevel, onDelta }) }, bridge(tools), formatCall(call), continueHint,
+ *   noToolsHint, repeatLimit, hold: 'marker' | 'leading-json', timeoutMs }.
+ *   chat(res, body, entry) -> Promise<{ status, ... }>   `entry` is the chosen model: { id, thinking, escalate, ref }
+ */
+function createChatEngine({ provider, governor = null, log = () => {}, onNotice = () => {} }) {
+  const p = { hold: 'marker', timeoutMs: 180000, idPrefix: provider.id.slice(0, 2), ...provider };
+  const gov = governor;
+  const web = p.web;
+  const inflight = new Set();
+  // What the reasoning mode said during a task, kept for the task's later steps and counted against its limit of MAX_THINKS. An agent makes a new request for
+  // every step and never sees a `think` step, so without this the plan from step 1 would be gone at step 2 and the model would ask for it again.
+  // task key -> { entries: [{ at, messages }], left, asks }
+  const taskThoughts = new Map();
+  const log_ = (text) => log(`${p.id}: ${text}`);
+  const notice = (n) => { try { onNotice({ provider: p.id, ...n }); } catch (_) { /* a listener never stops the engine */ } };
+
+  async function chat(res, body, entry) {
+    const messages = Array.isArray(body.messages) ? body.messages : [];
+    const clientTools = Array.isArray(body.tools) ? body.tools.filter((t) => t && (t.function || t.name)) : [];
+    const tools = body.tool_choice === 'none' ? [] : clientTools;
+    // A model that escalates is offered the `think` request next to the client's own tools; the client never sees it.
+    const canThink = Boolean(entry.escalate) && tools.length > 0;
+    let task = null; // the thoughts of this task so far (what came back, as messages the prompt shows like any tool result) and how many are left
+    if (canThink) {
+      const key = B.taskKeyOf(messages);
+      task = key ? taskThoughts.get(key) : null;
+      if (!task) {
+        task = { entries: [], left: MAX_THINKS, asks: 0 };
+        if (key) {
+          taskThoughts.set(key, task);
+          while (taskThoughts.size > MAX_TASKS_KEPT) taskThoughts.delete(taskThoughts.keys().next().value);
+        }
+      }
+    }
+    // A task that has used its thoughts is no longer offered the request (nor the rule about it): there is nothing left to ask.
+    const offerThink = canThink && task.left > 0;
+    const toolsAll = offerThink ? tools.concat([THINK_TOOL]) : tools;
+    const conversation = () => (task && task.entries.length ? B.withThoughts(messages, task.entries) : messages);
+    const promptOptions = { bridge: p.bridge, noToolsHint: p.noToolsHint, formatCall: p.formatCall, continueHint: p.continueHint, jsonMode: body.response_format };
+    const promptFor = () => B.buildPrompt(conversation(), toolsAll, promptOptions);
+    const basePrompt0 = promptFor();
+    let basePrompt = basePrompt0;
+    let prompt = basePrompt0;
+    const level = ['low', 'medium', 'high'].includes(String(body.reasoning_effort || '').toLowerCase()) ? String(body.reasoning_effort).toLowerCase() : (String(body.reasoning_effort || '').toLowerCase() === 'minimal' ? 'low' : undefined);
+
+    const controller = new AbortController();
+    // The time limit is for a call that went quiet (nothing streamed for p.timeoutMs), not for one that is still thinking: a thinking model can spend
+    // minutes on one step and the work would be thrown away at the flat limit. A call that streams is cut only at MAX_CALL_MS.
+    // While the request waits in the governor's queue only the flat cap applies; the quiet-call limit starts when it gets its turn.
+    let timer = setTimeout(() => controller.abort(), MAX_CALL_MS);
+    let clientGone = false;
+    const onClose = () => { if (!res.writableEnded) { clientGone = true; controller.abort(); } };
+    res.on('close', onClose);
+    inflight.add(controller);
+    const started = Date.now();
+    const arm = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => controller.abort(), Math.max(1000, Math.min(p.timeoutMs, started + MAX_CALL_MS - Date.now())));
+    };
+
+    const id = `chatcmpl-${p.idPrefix}-${crypto.randomBytes(8).toString('hex')}`;
+    const created = Math.floor(Date.now() / 1000);
+    const model = typeof body.model === 'string' && body.model ? body.model : entry.id;
+    const live = body.stream === true;
+    const wantUsage = live && Boolean(body.stream_options && body.stream_options.include_usage);
+    const thinkingMode = Boolean(entry.thinking) && !entry.escalate;
+    const base = { id, object: 'chat.completion.chunk', created, model };
+    let opened = false;
+    let held = '';
+    // A request with no tools has no call to hold back: its answer streams straight through, whatever it looks like.
+    const passThrough = toolsAll.length === 0;
+    let holdMode = p.hold === 'leading-json' ? 'undecided' : 'marker';
+    const resetHold = () => { held = ''; holdMode = p.hold === 'leading-json' ? 'undecided' : 'marker'; };
+    const write = (delta, finish = null) => {
+      if (res.destroyed || res.writableEnded) return;
+      res.write(`data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`);
+    };
+    const openStream = () => {
+      if (opened || !live) return;
+      opened = true;
+      res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+      write({ role: 'assistant', content: '' });
+    };
+    const emit = (delta) => {
+      if (!live) return;
+      openStream();
+      write(delta);
+    };
+    const feed = (text) => {
+      if (passThrough) { emit({ content: text }); return; }
+      held += text;
+      if (holdMode === 'all') return;
+      if (holdMode === 'undecided') {
+        const trimmed = held.replace(/^\s+/, '');
+        if (!trimmed) return;
+        // An answer that starts with JSON is a tool call (or a code fence around one): hold every token until the answer is complete, because a half
+        // streamed call is not valid to parse.
+        if (/^[{<`]/.test(trimmed)) { holdMode = 'all'; return; }
+        holdMode = 'marker';
+      }
+      const at = B.bodyHold(held, p.hold === 'leading-json');
+      if (at < 0) {
+        const out = held;
+        held = '';
+        if (out) emit({ content: out });
+      } else if (at > 0) {
+        const out = held.slice(0, at);
+        held = held.slice(at);
+        if (out) emit({ content: out });
+      }
+    };
+    const endStream = (usage) => {
+      if (res.destroyed || res.writableEnded) return;
+      if (wantUsage && usage) res.write(`data: ${JSON.stringify({ ...base, choices: [], usage })}\n\n`);
+      res.write('data: [DONE]\n\n');
+      res.end();
+    };
+    const cleanup = () => {
+      clearTimeout(timer);
+      res.off('close', onClose);
+      inflight.delete(controller);
+    };
+    const completionBody = (message, finish, usage) => ({ id, object: 'chat.completion', created, model, choices: [{ index: 0, message, finish_reason: finish }], usage });
+    /** One error answer: a plain JSON error before the stream opened, an error event inside it after. */
+    const fail = (status, code, message, headers = {}) => {
+      cleanup();
+      log_(`request failed (${status} ${code})`);
+      if (clientGone) return { ok: false, status: 499, code: 'client_closed' };
+      if (opened) {
+        if (!res.destroyed && !res.writableEnded) {
+          res.write(`data: ${JSON.stringify({ error: { message, type: status === 429 ? 'rate_limit_error' : 'api_error', code } })}\n\n`);
+          res.write('data: [DONE]\n\n');
+          res.end();
+        }
+      } else sendError(res, status, code, message, headers);
+      return { ok: false, status, code, message };
+    };
+
+    // A loop is ended before another call is spent on it.
+    if (p.repeatLimit) {
+      const repeat = B.trailingRepeat(messages);
+      if (repeat.count >= p.repeatLimit) {
+        const note = `${p.name} kept repeating the same step (${repeat.label}, ${repeat.count} times in a row), so the bridge stopped it to protect your account. What it wrote is kept. Tell it what to change, or ask for a different next step.`;
+        log_(`stopped a repeating step: ${repeat.label} x${repeat.count}`);
+        notice({ kind: 'looping', short: `${p.name} kept repeating the same step` });
+        cleanup();
+        const usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+        if (!live) sendJson(res, 200, completionBody({ role: 'assistant', content: note }, 'stop', usage));
+        else { openStream(); emit({ content: note }); write({}, 'stop'); endStream(usage); }
+        return { ok: true, status: 200, kind: 'stopped-loop', ms: Date.now() - started };
+      }
+    }
+
+    const limit = gov ? gov.checkLimit() : { allowed: true };
+    if (!limit.allowed) {
+      log_(`governor stopped a request: ${limit.reason}`);
+      notice({ kind: 'paused', short: `${p.name} requests are paused to protect your account (${limit.reason})` });
+      return fail(429, `${p.id}_${limit.reason}`, limit.message, { 'Retry-After': String(limit.retryAfterSec || 60) });
+    }
+    if (gov && gov.queueLength() >= MAX_QUEUE) {
+      return fail(429, `${p.id}_queue_full`, `${p.name} is busy: ${MAX_QUEUE} requests are already waiting. Account-backed models answer one request at a time; try again shortly.`, { 'Retry-After': '10' });
+    }
+
+    let releaseSlot = null;
+    let out;
+    let emptyAnswers = 0;
+    let unreadable = 0;
+    let thinkAsks = 0; // in this request
+    // One question to the reasoning mode, on a fresh chat, with the conversation so far (without the system prompt and the tool protocol: this call answers a
+    // question, it does not act). What it thinks is streamed as the model's reasoning. Returns { answer } or { fatal } (a refusal, an expired sign-in or a
+    // stop, which end the whole request like any other call's).
+    const deliberate = async (question) => {
+      if (gov && !gov.checkLimit().allowed) return { answer: NO_THOUGHT };
+      const asked = Date.now();
+      const context = B.buildPrompt(conversation().filter((m) => m && m.role !== 'system'), [], { closing: thinkHint(question), formatCall: p.formatCall });
+      const r = await web.completeOnce({
+        prompt: context,
+        thinking: true,
+        signal: controller.signal,
+        model: entry.ref || entry.id,
+        onDelta: (d) => {
+          arm();
+          if (live && d.type === 'think' && d.text) emit({ reasoning_content: d.text });
+        }
+      });
+      if (gov && counts(r)) gov.recordCall();
+      log_(`thought about a question (${r.ok ? `${String(r.text || '').length} chars` : 'no answer'}, ${Date.now() - asked}ms)`);
+      if (!r.ok && (r.authExpired || r.rateLimited || r.cancelled)) return { fatal: r };
+      const text = r.ok ? String(r.text || '').trim() : '';
+      if (text) return { answer: text.slice(0, 8000) };
+      const notes = r.ok ? String(r.thinking || '').trim().slice(-2000) : '';
+      return { answer: notes ? `${NO_THOUGHT}\n\nIts unfinished notes, for what they are worth:\n${notes}` : NO_THOUGHT };
+    };
+    try {
+      try { releaseSlot = gov ? await gov.acquireSlot(controller.signal) : null; } catch (err) {
+        // The caller left (or the flat time cap ran out) while this request waited for its turn: nothing was sent, so nothing is sent now.
+        if (err && err.aborted) return fail(504, `${p.id}_timeout`, `${p.name} took too long to answer.`);
+        throw err;
+      }
+      arm(); // the time a call waited in the queue is not time the provider kept it
+      // A call can wait for its slot behind one that found the provider refusing (a rate limit, a human check) and so set a pause. That pause is this
+      // call's too: without this look each queued call walked into the same refusal and set the pause again.
+      const waited = gov ? gov.checkLimit() : { allowed: true };
+      if (!waited.allowed) {
+        out = { ok: false, rateLimited: true, error: waited.message, retryAfterSec: waited.retryAfterSec, noticeKind: 'paused', noticeShort: `${p.name} requests are paused to protect your account` };
+        log_(`governor stopped a queued request: ${waited.reason}`);
+      }
+      // An answer with neither words nor a step is the web chat giving up after its thinking. The caller would read an empty stop as "finished", so ask once more.
+      let repairing = false; // the second ask after a call that could not be read: no thinking, so the whole reply is the call
+      for (let attempt = 1; !(out && out.noticeKind) && attempt <= EMPTY_ANSWER_ATTEMPTS; attempt += 1) {
+        out = await web.completeOnce({
+          prompt,
+          thinking: repairing ? false : thinkingMode,
+          signal: controller.signal,
+          model: entry.ref || entry.id,
+          thinkingLevel: level,
+          onDelta: (d) => {
+            arm();
+            if (!live) return;
+            if (d.type === 'think') { if (d.text) emit({ reasoning_content: d.text }); }
+            else if (d.type === 'answer') feed(d.text);
+          }
+        });
+        if (gov && counts(out)) gov.recordCall();
+        if (out.ok && B.unreadableCall(out.text, toolsAll)) {
+          unreadable += 1;
+          log_(`the tool call in the answer could not be read (attempt ${attempt} of ${EMPTY_ANSWER_ATTEMPTS}, ${String(out.text || '').length} chars)`);
+          if (attempt < EMPTY_ANSWER_ATTEMPTS && !(gov && !gov.checkLimit().allowed)) {
+            resetHold();
+            prompt = basePrompt + (B.opensCall(String(out.text || '')) ? CUT_NOTE : REPAIR_NOTE);
+            repairing = true;
+            continue;
+          }
+          break;
+        }
+        // The plain chat asked to think: the reasoning model gets that one question, its answer goes back to the plain chat, and the plain chat carries on.
+        if (out.ok && offerThink && thinkAsks <= MAX_THINKS) {
+          const asked = B.thinkRequest(out.text, toolsAll);
+          if (asked) {
+            thinkAsks += 1;
+            task.asks += 1;
+            let answer = NO_MORE_THOUGHT;
+            if (task.left > 0) {
+              task.left -= 1;
+              const thought = await deliberate(asked.question);
+              if (thought.fatal) { out = thought.fatal; break; }
+              answer = thought.answer;
+            }
+            const callId = `think_${task.asks}`;
+            task.entries.push({
+              at: messages.length,
+              messages: [
+                { role: 'assistant', content: '', tool_calls: [{ id: callId, type: 'function', function: { name: 'think', arguments: JSON.stringify({ question: asked.question }) } }] },
+                { role: 'tool', tool_call_id: callId, content: answer }
+              ]
+            });
+            basePrompt = promptFor();
+            prompt = basePrompt;
+            resetHold();
+            repairing = false;
+            attempt -= 1; // asking again after a thought is not a retry of anything
+            continue;
+          }
+        }
+        if (!out.ok || String(out.text || '').trim()) break;
+        emptyAnswers += 1;
+        log_(`the answer came back empty after ${Date.now() - started}ms (attempt ${attempt} of ${EMPTY_ANSWER_ATTEMPTS})`);
+        if (gov && !gov.checkLimit().allowed) break;
+      }
+    } finally {
+      if (releaseSlot) releaseSlot();
+      cleanup();
+    }
+
+    if (!out.ok) {
+      if (out.cancelled && clientGone) return fail(499, 'client_closed', 'The client closed the connection.');
+      const message = out.cancelled ? `${p.name} took too long to answer.` : (out.error || `${p.name} could not answer.`);
+      if (out.authExpired) {
+        log_('the sign-in was refused, ending the request cleanly');
+        notice({ kind: 'expired', short: `the ${p.name} sign-in expired` });
+        return fail(401, `${p.id}_session_expired`, message);
+      }
+      if (out.rateLimited) {
+        log_('the provider\'s own limit was reached, ending the request cleanly');
+        notice({ kind: out.noticeKind || 'limit', short: out.noticeShort || `${p.name}'s own limit was reached` });
+        const retry = (gov && gov.checkLimit().retryAfterSec) || out.retryAfterSec || 300;
+        return fail(429, `${p.id}_${out.noticeKind === 'muted' ? 'muted' : 'rate_limited'}`, message, { 'Retry-After': String(retry) });
+      }
+      if (out.cancelled) return fail(504, `${p.id}_timeout`, message);
+      // A permanent condition (a security check on the page, say) must not look like a server hiccup: a 4xx tells a retrying client to stop.
+      log_('request failed: ' + String(out.error || '').slice(0, 200));
+      return fail(out.retryable === false ? 400 : 502, `${p.id}_error`, message);
+    }
+
+    const parsed = B.parseAnswer(out.text, toolsAll);
+    const calls = parsed.calls.filter((c) => c.name !== 'think').map((call) => ({ ...call, id: `call_${crypto.randomBytes(8).toString('hex')}` }));
+    log_(`${messages.length} messages, ${tools.length} tools, ${out.text.length} chars, ${calls.length} calls, ${Date.now() - started}ms`);
+    // Still unreadable after the second try: the damaged call is not shown as the answer (a page's mangled copy of a file).
+    if (unreadable > 0 && !calls.length && B.unreadableCall(out.text, toolsAll)) {
+      notice({ kind: 'unreadable', short: `${p.name} sent a tool call that could not be read` });
+      return fail(502, `${p.id}_unreadable_tool_call`, `${p.name} answered with a tool call that could not be read (it was cut off or damaged), so nothing was done. If it was a long file, ask for it in smaller parts.`);
+    }
+    if (!String(out.text || '').trim()) {
+      notice({ kind: 'empty', short: `${p.name} sent no answer` });
+      return fail(502, `${p.id}_empty_answer`, `${p.name} sent no answer${emptyAnswers > 1 ? `, ${emptyAnswers} times` : ''} (after ${Math.round((Date.now() - started) / 1000)} s). Try the request again.`);
+    }
+    const usage = {
+      prompt_tokens: estimateTokens(prompt.length),
+      completion_tokens: estimateTokens(out.text.length) + estimateTokens((out.thinking || '').length),
+      total_tokens: 0,
+      ...(out.thinking ? { completion_tokens_details: { reasoning_tokens: estimateTokens(out.thinking.length) } } : {})
+    };
+    usage.total_tokens = usage.prompt_tokens + usage.completion_tokens;
+    cleanup();
+    const finish = calls.length ? 'tool_calls' : 'stop';
+    const summary = { ok: true, status: 200, calls: calls.length, ms: Date.now() - started, chars: out.text.length };
+
+    if (!live) {
+      sendJson(res, 200, completionBody({
+        role: 'assistant',
+        content: parsed.content || null,
+        ...(out.thinking ? { reasoning_content: out.thinking } : {}),
+        ...(calls.length ? { tool_calls: calls.map((c) => ({ id: c.id, type: 'function', function: { name: c.name, arguments: c.arguments } })) } : {})
+      }, finish, usage));
+      return summary;
+    }
+    // Text went out as it arrived. A held tail is either the tool-call markup (dropped) or ordinary text that only looked like the start of one (released).
+    if (held && !calls.length) emit({ content: held });
+    openStream();
+    calls.forEach((call, index) => {
+      write({ tool_calls: [{ index, id: call.id, type: 'function', function: { name: call.name, arguments: call.arguments } }] });
+    });
+    write({}, finish);
+    endStream(usage);
+    return summary;
+  }
+
+  function stop() {
+    for (const controller of inflight) { try { controller.abort(); } catch (_) { /* gone */ } }
+    inflight.clear();
+  }
+
+  return { chat, stop };
+}
+
+module.exports = { createChatEngine, THINK_TOOL, estimateTokens };
