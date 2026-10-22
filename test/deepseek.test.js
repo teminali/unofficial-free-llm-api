@@ -15,7 +15,7 @@ const os = require('os');
 const path = require('path');
 const http = require('http');
 const { EventEmitter } = require('events');
-const { createConfig } = require('../src/config');
+const { createConfig, removeTree } = require('../src/config');
 const { createRegistry } = require('../src/registry');
 const { createServer } = require('../src/server');
 const { DEEPSEEK_PACE } = require('../src/governor');
@@ -45,7 +45,7 @@ async function boot({ link = 'session', pace = FAST } = {}) {
   const t = {
     site, dir, provider, srv, key, config, logs, base: `http://127.0.0.1:${port}`,
     chat: (body) => fetch(`${t.base}/v1/chat/completions`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` }, body: JSON.stringify(body) }),
-    async close() { await srv.stop(); await site.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+    async close() { await srv.stop(); await site.close(); removeTree(dir); }
   };
   if (link === 'session') {
     // a saved login, as a link would have written it

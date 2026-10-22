@@ -50,6 +50,14 @@ function writeJson(file, data) {
   try { fs.chmodSync(file, 0o600); } catch (_) { /* best effort */ }
 }
 
+/**
+ * Removes a folder and everything in it, trying again for a moment when the system says it is not empty or busy. A Chrome profile is the case this is for: Chrome's main
+ * process has exited but its helper processes can still be writing into the folder, and a single attempt then fails and leaves the signed-in profile behind.
+ */
+function removeTree(dir) {
+  fs.rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 250 });
+}
+
 function createConfig({ dataDir = defaultDataDir() } = {}) {
   ensureDir(dataDir);
   const file = path.join(dataDir, 'config.json');
@@ -162,4 +170,4 @@ function createConfig({ dataDir = defaultDataDir() } = {}) {
   return { dataDir, file, createApiKey, listApiKeys, revokeApiKey, findApiKey, adminTokenMatches, adminToken: () => state.adminToken, providerSettings, setProviderSettings };
 }
 
-module.exports = { createConfig, defaultDataDir, readJson, writeJson, ensureDir, safeEqual, sha256, KEY_PREFIX };
+module.exports = { createConfig, defaultDataDir, readJson, writeJson, removeTree, ensureDir, safeEqual, sha256, KEY_PREFIX };

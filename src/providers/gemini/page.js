@@ -14,7 +14,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { writeJson } = require('../../config');
+const { writeJson, removeTree } = require('../../config');
 const { chromeExecutable, NO_CHROME } = require('../chrome');
 
 const SESSION_FILE = 'gemini_session.json';
@@ -670,7 +670,7 @@ function createGemini({ dataDir, log = () => {}, governor = null, onStatus = () 
     await closeDriven();
     try { fs.unlinkSync(sessionPath()); } catch (_) {}
     // The profile folder is this program's copy of the Google session: deleting it signs the lane out everywhere.
-    try { fs.rmSync(profileDir(), { recursive: true, force: true }); } catch (_) {}
+    try { removeTree(profileDir()); } catch (err) { log('gemini: the profile folder could not be removed: ' + String((err && err.message) || err)); }
     if (governor) governor.clearCooldown();
     log('gemini: unlinked');
     emit();

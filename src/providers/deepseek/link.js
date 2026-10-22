@@ -14,7 +14,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { readJson, writeJson } = require('../../config');
+const { readJson, writeJson, removeTree } = require('../../config');
 const { chromeExecutable, NO_CHROME } = require('../chrome');
 const { launchChrome, launchPlainChrome } = require('../chrome_cdp');
 const { sessionExpiry } = require('./session_expiry');
@@ -256,7 +256,7 @@ function createDeepSeekAccount({ dataDir, base = DEFAULT_BASE, log = () => {}, g
     await settle();
     try { fs.unlinkSync(sessionPath()); } catch (_) { /* nothing was saved */ }
     // The profile folder is this program's copy of the DeepSeek session: deleting it signs the lane out everywhere.
-    try { fs.rmSync(profileDir(), { recursive: true, force: true }); } catch (_) { /* best effort */ }
+    try { removeTree(profileDir()); } catch (err) { log('deepseek: the profile folder could not be removed: ' + String((err && err.message) || err)); }
     if (governor) governor.clearCooldown();
     log('deepseek: unlinked');
     return { linked: false, models: [], usage: governor ? governor.getStats() : null };
