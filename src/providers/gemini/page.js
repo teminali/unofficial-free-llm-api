@@ -670,7 +670,7 @@ function createGemini({ dataDir, log = () => {}, governor = null, onStatus = () 
     await closeDriven();
     try { fs.unlinkSync(sessionPath()); } catch (_) {}
     // The profile folder is this program's copy of the Google session: deleting it signs the lane out everywhere.
-    try { removeTree(profileDir()); } catch (err) { log('gemini: the profile folder could not be removed: ' + String((err && err.message) || err)); }
+    try { await removeTree(profileDir()); } catch (err) { log('gemini: the profile folder could not be removed: ' + String((err && err.message) || err)); }
     if (governor) governor.clearCooldown();
     log('gemini: unlinked');
     emit();

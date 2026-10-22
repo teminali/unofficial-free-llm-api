@@ -14,7 +14,8 @@ const os = require('os');
 const path = require('path');
 const { EventEmitter } = require('events');
 const { spawn } = require('child_process');
-const { createConfig, removeTree } = require('../src/config');
+const { createConfig } = require('../src/config');
+const { cleanupDir } = require('./fixtures/cleanup');
 const { createRegistry } = require('../src/registry');
 const { createServer } = require('../src/server');
 const { chromeExecutable } = require('../src/providers/chrome');
@@ -40,7 +41,7 @@ async function boot({ plan = 'pro', link = true } = {}) {
   const t = {
     page, dir, provider, srv, key, config, base: `http://127.0.0.1:${port}`,
     chat: (body) => fetch(`${t.base}/v1/chat/completions`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` }, body: JSON.stringify(body) }),
-    async close() { await srv.stop(); await page.close(); removeTree(dir); }
+    async close() { await srv.stop(); await page.close(); await cleanupDir(dir); }
   };
   if (link) {
     const started = await provider.startLink({ consentAcknowledged: true });
@@ -252,6 +253,6 @@ test('stopping while a link waits leaves nothing behind: the program is free to 
     clearTimeout(timer);
     try { child.kill('SIGKILL'); } catch (_) { /* gone */ }
     await page.close();
-    removeTree(dir);
+    await cleanupDir(dir);
   }
 });

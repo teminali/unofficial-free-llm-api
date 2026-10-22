@@ -51,11 +51,12 @@ function writeJson(file, data) {
 }
 
 /**
- * Removes a folder and everything in it, trying again for a moment when the system says it is not empty or busy. A Chrome profile is the case this is for: Chrome's main
- * process has exited but its helper processes can still be writing into the folder, and a single attempt then fails and leaves the signed-in profile behind.
+ * Removes a folder and everything in it, trying again for a moment when the system says it is not empty or busy (without blocking the event loop while it waits).
+ * A Chrome profile is the case this is for: Chrome's main process has exited but its helper processes can still be writing into the folder, and a single attempt
+ * then fails and leaves the signed-in profile behind.
  */
 function removeTree(dir) {
-  fs.rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 250 });
+  return fs.promises.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 250 });
 }
 
 function createConfig({ dataDir = defaultDataDir() } = {}) {

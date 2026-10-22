@@ -256,7 +256,7 @@ function createDeepSeekAccount({ dataDir, base = DEFAULT_BASE, log = () => {}, g
     await settle();
     try { fs.unlinkSync(sessionPath()); } catch (_) { /* nothing was saved */ }
     // The profile folder is this program's copy of the DeepSeek session: deleting it signs the lane out everywhere.
-    try { removeTree(profileDir()); } catch (err) { log('deepseek: the profile folder could not be removed: ' + String((err && err.message) || err)); }
+    try { await removeTree(profileDir()); } catch (err) { log('deepseek: the profile folder could not be removed: ' + String((err && err.message) || err)); }
     if (governor) governor.clearCooldown();
     log('deepseek: unlinked');
     return { linked: false, models: [], usage: governor ? governor.getStats() : null };
