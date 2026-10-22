@@ -18,7 +18,7 @@
 You need Node.js 22 or newer, and Google Chrome (only for linking an account).
 
 ```bash
-npx github:teminali/unofficial-llm-api        # or: git clone, then npm start
+npx unofficial-llm-api        # or: npx github:teminali/unofficial-llm-api, or git clone then npm start
 ```
 
 The terminal prints a link and opens it: that is the web interface. It also prints your first API key, once.
@@ -27,7 +27,7 @@ The terminal prints a link and opens it: that is the web interface. It also prin
 2. **Playground** → pick a model and talk to it.
 3. **API** → copy the base URL and a key into your own code.
 
-No account yet? `npx github:teminali/unofficial-llm-api --demo --providers demo` starts with a demo provider that
+No account yet? `npx unofficial-llm-api --demo --providers demo` starts with a demo provider that
 answers by describing what it was sent, so you can try the interface and your client first.
 
 ## What you get
