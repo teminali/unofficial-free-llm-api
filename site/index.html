@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; style-src 'self'; script-src 'self'; base-uri 'none'; form-action 'none'">
+<title>Unofficial Free LLM API: a local API for your own chat account</title>
+<meta name="description" content="A local, OpenAI-compatible API and web playground for the personal DeepSeek or Gemini chat account you already have. Unofficial, alpha, open source.">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0d1015" media="(prefers-color-scheme: dark)">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Unofficial Free LLM API">
+<meta property="og:title" content="Unofficial Free LLM API: a local API for your own chat account">
+<meta property="og:description" content="A local, OpenAI-compatible API and web playground for the personal DeepSeek or Gemini chat account you already have. Unofficial, alpha, open source.">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Unofficial Free LLM API: a local API for your own chat account">
+<meta name="twitter:description" content="A local, OpenAI-compatible API and web playground for the personal DeepSeek or Gemini chat account you already have. Unofficial, alpha, open source.">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="styles.css">
+<script src="app.js"></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to the content</a>
+
+<header class="wrap top">
+  <a class="brand" href="./"><img src="favicon.svg" alt="" width="28" height="28"><span>Unofficial Free LLM API</span></a>
+  <div class="theme js-only" role="group" aria-label="Colour theme">
+    <button type="button" class="js-only" data-theme-set="system" aria-pressed="true" aria-label="Use the system theme" title="System">
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>
+    </button>
+    <button type="button" class="js-only" data-theme-set="light" aria-pressed="false" aria-label="Use the light theme" title="Light">
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+    </button>
+    <button type="button" class="js-only" data-theme-set="dark" aria-pressed="false" aria-label="Use the dark theme" title="Dark">
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+    </button>
+  </div>
+</header>
+
+<main id="main">
+  <section class="hero wrap" aria-labelledby="top-title">
+    <p class="eyebrow">Alpha &middot; open source &middot; MIT</p>
+    <h1 id="top-title">Unofficial Free LLM API</h1>
+    <p class="lead">A local, OpenAI-compatible API and web playground for the personal DeepSeek or Gemini chat account you already have.</p>
+
+    <aside id="notice" class="notice" role="note" aria-label="Read this first">
+      <p class="notice-title"><strong>Unofficial, and it carries real risk.</strong></p>
+      <p>This is not made or endorsed by DeepSeek or Google. It may break their terms, and an account used this way can be slowed down, muted or signed out. The program paces and caps itself to lower that risk, not to remove it. It can also stop working at any time, because the providers change their sites without notice.</p>
+      <p>Use an account you can afford to lose. Read the <a href="https://github.com/teminali/unofficial-free-llm-api/blob/HEAD/DISCLAIMER.md">DISCLAIMER</a> before you link anything.</p>
+    </aside>
+
+    <div class="start">
+      <p class="label" id="start-label">Start it in a terminal</p>
+      <div class="cmd" role="group" aria-labelledby="start-label">
+        <code id="cmd">npx unofficial-free-llm-api@latest</code>
+        <button type="button" class="copy js-only" data-copy="cmd" aria-label="Copy the command">
+          <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5v-2A1.5 1.5 0 0 0 9 2H4a1.5 1.5 0 0 0-1.5 1.5V9A1.5 1.5 0 0 0 4 10.5h1.5"/></svg>
+          <span class="copy-label" data-label="Copy">Copy</span>
+        </button>
+      </div>
+      <p class="small">You need Node.js 22 or newer, and Google Chrome (only for linking an account). <code>@latest</code> stops your computer from running an older copy it kept.</p>
+      <p class="actions">
+        <a class="btn btn-primary" href="https://github.com/teminali/unofficial-free-llm-api">View on GitHub</a>
+        <a class="btn" href="https://www.npmjs.com/package/unofficial-free-llm-api">npm package</a>
+      </p>
+    </div>
+  </section>
+
+  <section class="sec" id="how" aria-labelledby="how-title">
+    <div class="wrap">
+      <h2 id="how-title">How it works</h2>
+      <ol class="steps">
+        <li>
+          <h3>Start it</h3>
+          <p>Run the command above. It prints a link and opens it: that is the web interface. It also prints your first API key.</p>
+        </li>
+        <li>
+          <h3>Sign in yourself</h3>
+          <p>In the web interface, choose Accounts, then Link account. Tick the box, sign in to the provider in the Chrome window that opens, then press &ldquo;I have signed in&rdquo;. The program never sees your password.</p>
+        </li>
+        <li>
+          <h3>Point your tool at it</h3>
+          <p>Use <code>http://localhost:8420/v1</code> as the base URL and paste in your API key. The API page shows both, ready to copy.</p>
+        </li>
+      </ol>
+      <p>No account yet? Add the flags <code>--demo --providers demo</code> to the command. A demo provider answers by describing what it was sent, so you can try the interface and your own tool first.</p>
+    </div>
+  </section>
+
+  <section class="sec" id="features" aria-labelledby="features-title">
+    <div class="wrap">
+      <h2 id="features-title">What you get <span class="chip">Alpha</span></h2>
+      <ul class="items">
+        <li>
+          <h3>OpenAI-style chat</h3>
+          <p><code>POST /v1/chat/completions</code> with streaming, tool calls and JSON mode, and <code>reasoning_content</code> when the model thinks first.</p>
+        </li>
+        <li>
+          <h3>Two more APIs</h3>
+          <p>OpenAI&rsquo;s Responses API at <code>/v1/responses</code> and Anthropic&rsquo;s Messages API at <code>/v1/messages</code>, for clients that speak those.</p>
+        </li>
+        <li>
+          <h3>A models list</h3>
+          <p><code>GET /v1/models</code> lists the models of the accounts that are linked right now, each with a working <code>context_length</code>. Gemini&rsquo;s list follows your account, and <code>gemini</code> and <code>gemini-auto</code> are always there.</p>
+        </li>
+        <li>
+          <h3>One chat per conversation</h3>
+          <p>A conversation stays in one provider chat, the way a person&rsquo;s does, instead of opening a new chat for every message. If a chat cannot be continued, it is given up and the request is asked again in a new chat.</p>
+        </li>
+        <li>
+          <h3>A playground</h3>
+          <p>A web interface served by the same program. Talk to a model with streaming, link and unlink accounts, see your usage, limits and cooldowns, make API keys and copy ready-made snippets.</p>
+        </li>
+        <li>
+          <h3>doctor and selftest</h3>
+          <p><code>doctor</code> checks Node, Chrome, the data folder&rsquo;s permissions, the port and your accounts, and says what to fix. <code>selftest --yes</code> sends a short conversation through a running server and tells you whether it stayed in one provider chat. It spends one request per turn and prints sizes and times, never words.</p>
+        </li>
+      </ul>
+
+      <figure class="shot">
+        <img class="shot-light" src="assets/playground-light.png" width="1280" height="860" loading="lazy" decoding="async" alt="The playground: a streamed answer with its thinking in a fold, a model picker and a message box.">
+        <img class="shot-dark" src="assets/playground-dark.png" width="1280" height="860" loading="lazy" decoding="async" alt="The playground in the dark theme: a streamed answer with its thinking in a fold, a model picker and a message box.">
+        <figcaption>The playground, with a demo provider.</figcaption>
+      </figure>
+
+      <div class="status">
+        <h3>Status: Alpha. What has been run, honestly</h3>
+        <ul>
+          <li>The program has automated tests that run against stand-ins: a scripted provider, a local copy of DeepSeek&rsquo;s endpoints and a local page shaped like Gemini&rsquo;s.</li>
+          <li>Run by the author on their own real accounts, on 2026-10-22: linking DeepSeek and Gemini, chatting, a three-message DeepSeek conversation that stayed in one DeepSeek chat, a Gemini conversation that stayed in one Gemini chat, switching models, and the model list read from a real Gemini picker. DeepSeek answered in 3 to 8 seconds. Gemini worked but was slow and uneven, and sometimes answered with its own error message.</li>
+          <li>Not yet run against a real account: an agent sending tools, long conversations, a day of steady use, <code>selftest --yes</code>, the Anthropic and Responses APIs with their own clients. One chat per conversation is built to fail safe: if a provider does not accept it, the chat is given up, and two failures in a row switch the feature off.</li>
+          <li>Not supported: images in, embeddings, and more than one answer per request. Settings a web chat has no control for, like <code>temperature</code>, are ignored and named in an <code>X-ULA-Ignored</code> response header. Token counts are estimates.</li>
+          <li>If you try it on a real account, an issue saying what you saw is the most useful contribution there is.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec" id="privacy" aria-labelledby="privacy-title">
+    <div class="wrap">
+      <h2 id="privacy-title">Privacy and safety</h2>
+      <ul class="facts">
+        <li>
+          <h3>It runs only on your computer</h3>
+          <p>By default the server listens on <code>127.0.0.1</code>, so it is for this computer only, and other hosts are refused. There is no cloud and no account with us.</p>
+        </li>
+        <li>
+          <h3>You sign in yourself</h3>
+          <p>Linking never sees your password. You sign in to the provider in a Chrome window, and the program keeps the session that results.</p>
+        </li>
+        <li>
+          <h3>Your logins stay in a folder on your machine</h3>
+          <p>The folder is set up so that only you can read it. Anyone who gets it can use your account, so treat it like a browser profile.</p>
+        </li>
+        <li>
+          <h3>API keys</h3>
+          <p>By default every request to <code>/v1</code> needs a key. Make, show and revoke keys on the API page or with <code>unofficial-free-llm-api key</code>.</p>
+        </li>
+        <li>
+          <h3>Nothing goes anywhere except to the provider</h3>
+          <p>Only the requests to the provider leave your computer. Logs and the Activity page keep names, sizes and times: never a prompt, an answer, a token or a cookie. The one other call the program can make is <code>doctor --online</code>, which asks npm for the newest version, and only when you ask.</p>
+        </li>
+        <li>
+          <h3>It paces and caps itself</h3>
+          <p>DeepSeek: one request at a time, at least 4 seconds apart, at most 10 a minute. Gemini: 1 second apart, 20 a minute. A daily cap of 300 calls per account by default. The first refusal from a provider, such as a rate limit, a mute or a human check, stops all calls until a cooldown ends. This lowers the risk. It does not remove it.</p>
+        </li>
+        <li>
+          <h3>This site has no tracking</h3>
+          <p>No analytics, no cookies, no fonts or scripts from other sites. It makes no request to any other address. The only thing it remembers is your light or dark choice, in your own browser.</p>
+        </li>
+        <li>
+          <h3>What it does not protect</h3>
+          <p>Another person on the same computer can reach the local port, and can use the API if they have a key, so do not run it on a shared machine. A model&rsquo;s text can become tool calls in your client, so keep approval on for tools that can do harm. The provider sees what you send, as it would from a browser. More in the <a href="https://github.com/teminali/unofficial-free-llm-api/blob/HEAD/docs/security.md">security notes</a>.</p>
+        </li>
+      </ul>
+
+      <figure class="shot">
+        <img src="assets/accounts.png" width="1280" height="860" loading="lazy" decoding="async" alt="The Accounts page: two providers side by side, with calls used today, the daily cap and the one-chat-per-conversation switch.">
+        <figcaption>The Accounts page shows each provider&rsquo;s pace, daily cap and cooldown. The linked account here is a local stand-in, not a real one.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section class="sec" id="use" aria-labelledby="use-title">
+    <div class="wrap">
+      <h2 id="use-title">Use it from tools</h2>
+      <p>It works with OpenAI-compatible tools: anything that lets you set a base URL and an API key. Use <code>http://localhost:8420/v1</code> and a key from the API page. The model ids are the ones <code>GET /v1/models</code> lists for the accounts you linked.</p>
+
+      <figure class="code">
+        <figcaption class="code-head"><span>curl</span>
+          <button type="button" class="copy js-only" data-copy="code-curl" aria-label="Copy the curl example">
+            <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5v-2A1.5 1.5 0 0 0 9 2H4a1.5 1.5 0 0 0-1.5 1.5V9A1.5 1.5 0 0 0 4 10.5h1.5"/></svg>
+            <span class="copy-label" data-label="Copy">Copy</span>
+          </button>
+        </figcaption>
+        <pre tabindex="0"><code id="code-curl">curl http://localhost:8420/v1/chat/completions \
+  -H "Authorization: Bearer sk-ula-..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "deepseek-chat",
+    "messages": [{"role": "user", "content": "Say hello in five words."}]
+  }'</code></pre>
+      </figure>
+
+      <figure class="code">
+        <figcaption class="code-head"><span>Python, OpenAI SDK</span>
+          <button type="button" class="copy js-only" data-copy="code-python" aria-label="Copy the Python example">
+            <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5v-2A1.5 1.5 0 0 0 9 2H4a1.5 1.5 0 0 0-1.5 1.5V9A1.5 1.5 0 0 0 4 10.5h1.5"/></svg>
+            <span class="copy-label" data-label="Copy">Copy</span>
+          </button>
+        </figcaption>
+        <pre tabindex="0"><code id="code-python">from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8420/v1", api_key="sk-ula-...")
+reply = client.chat.completions.create(
+    model="deepseek-chat",
+    messages=[{"role": "user", "content": "Say hello in five words."}],
+)
+print(reply.choices[0].message.content)</code></pre>
+      </figure>
+
+      <p>Add <code>"stream": true</code> to get the answer as it is written. The full reference is in <a href="https://github.com/teminali/unofficial-free-llm-api/blob/HEAD/docs/api.md">docs/api.md</a>, and there are more examples (curl, Python, Node, streaming, tool calling) in <a href="https://github.com/teminali/unofficial-free-llm-api/tree/HEAD/examples">examples/</a>.</p>
+
+      <figure class="shot">
+        <img src="assets/api.png" width="1280" height="860" loading="lazy" decoding="async" alt="The API page: the base URL, a choice of key and model, and copy-ready examples for several clients.">
+        <figcaption>The API page has the base URL, your keys and examples you can copy. The key and models shown are from a local stand-in.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section class="sec faq" id="faq" aria-labelledby="faq-title">
+    <div class="wrap">
+      <h2 id="faq-title">Questions</h2>
+
+      <details>
+        <summary>Is it free?</summary>
+        <div class="answer">
+          <p>&ldquo;Free&rdquo; means the free personal chat accounts you already have. This adds no capacity: you get what your own account gets. The software itself is open source under the MIT licence.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary>Is my account safe?</summary>
+        <div class="answer">
+          <p>There is no guarantee. Providers can slow an account down, ask for human checks, sign it out or mute it. A DeepSeek account has been muted for days after bursts of messages sent this way. The program paces and caps itself and stops at the first refusal, which lowers the risk and cannot remove it.</p>
+          <p>Use an account you can afford to lose, and not one you earn from or depend on. Read the <a href="https://github.com/teminali/unofficial-free-llm-api/blob/HEAD/DISCLAIMER.md">DISCLAIMER</a> first.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary>Why does it open Chrome?</summary>
+        <div class="answer">
+          <p>To link an account. It opens an ordinary Chrome window on a private profile folder inside the program&rsquo;s data folder, never your everyday profile, and you sign in there yourself. That is how the program never sees your password.</p>
+          <p>After that, DeepSeek is answered without a window. Gemini is answered through Chrome running in the background, which uses hundreds of MB while it works and closes after ten idle minutes.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary>Can I put it on a server?</summary>
+        <div class="answer">
+          <p>No, not as a service for other people. The logins and the Chrome profile live in a folder on your own computer, and that is part of the security design: anyone who gets that folder can use your account.</p>
+          <p>The DISCLAIMER also says it is not for sharing access to your account or running a service on it. Running it on your own machine with no desktop is described in the <a href="https://github.com/teminali/unofficial-free-llm-api/blob/HEAD/docs/providers.md">providers notes</a>, and is untested.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary>Which systems does it run on?</summary>
+        <div class="answer">
+          <p>It needs Node.js 22 or newer, and Google Chrome to link an account (Chromium and Edge are tried when Chrome is missing). The documentation does not list operating systems. Run <code>unofficial-free-llm-api doctor</code>: it checks Node, Chrome, the data folder, the port and your accounts, and says what to fix.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary>What if it stops working?</summary>
+        <div class="answer">
+          <p>Providers change their sites without notice, and when they do, that provider breaks here until someone fixes it. Run <code>doctor</code> to check your setup. A blank DeepSeek page that keeps redirecting is usually Chrome refusing to save site data for it; the <a href="https://github.com/teminali/unofficial-free-llm-api#if-something-does-not-work">README explains the fix</a>. If that does not explain it, <a href="https://github.com/teminali/unofficial-free-llm-api/issues/new?template=provider_broke.yml">open an issue</a> with the log lines from <code>ULA_DEBUG=1</code>. They carry names and sizes, never prompts or tokens. Do not paste tokens, cookies, emails or your data folder.</p>
+        </div>
+      </details>
+    </div>
+  </section>
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <ul>
+      <li><a href="https://github.com/teminali/unofficial-free-llm-api">GitHub</a></li>
+      <li><a href="https://www.npmjs.com/package/unofficial-free-llm-api">npm</a></li>
+      <li><a href="https://github.com/teminali/unofficial-free-llm-api/blob/HEAD/LICENSE">MIT licence</a></li>
+      <li><a href="https://github.com/teminali/unofficial-free-llm-api/blob/HEAD/DISCLAIMER.md">Disclaimer</a></li>
+      <li><a href="https://github.com/teminali/unofficial-free-llm-api/blob/HEAD/SECURITY.md">Security</a></li>
+      <li><a href="https://github.com/teminali/unofficial-free-llm-api/blob/HEAD/DONATE.md">Donate</a></li>
+    </ul>
+    <p>Unofficial Free LLM API is open source under the MIT licence. Not affiliated with DeepSeek or Google.</p>
+    <p>This site loads nothing from other sites and has no tracking.</p>
+  </div>
+</footer>
+<p id="live" class="sr" role="status" aria-live="polite"></p>
+</body>
+</html>
