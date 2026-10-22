@@ -1,20 +1,20 @@
 {
-  "name": "unofficial-llm-api",
-  "version": "0.1.0",
+  "name": "unofficial-free-llm-api",
+  "version": "0.2.0",
   "description": "A local OpenAI-compatible API and web playground for the personal chat accounts you already have (DeepSeek, Gemini). Unofficial.",
   "license": "MIT",
   "author": "teminali",
-  "homepage": "https://github.com/teminali/unofficial-llm-api#readme",
+  "homepage": "https://github.com/teminali/unofficial-free-llm-api#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/teminali/unofficial-llm-api.git"
+    "url": "git+https://github.com/teminali/unofficial-free-llm-api.git"
   },
   "bugs": {
-    "url": "https://github.com/teminali/unofficial-llm-api/issues"
+    "url": "https://github.com/teminali/unofficial-free-llm-api/issues"
   },
   "funding": {
     "type": "custom",
-    "url": "https://github.com/teminali/unofficial-llm-api/blob/HEAD/DONATE.md"
+    "url": "https://github.com/teminali/unofficial-free-llm-api/blob/HEAD/DONATE.md"
   },
   "keywords": [
     "llm",
@@ -28,8 +28,8 @@
     "chat"
   ],
   "bin": {
-    "unofficial-llm-api": "bin/unofficial-llm-api.js",
-    "ula": "bin/unofficial-llm-api.js"
+    "unofficial-free-llm-api": "bin/unofficial-free-llm-api.js",
+    "ula": "bin/unofficial-free-llm-api.js"
   },
   "main": "src/server.js",
   "engines": {
@@ -44,11 +44,12 @@
     "DONATE.md",
     "DISCLAIMER.md",
     "LICENSE",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md"
   ],
   "scripts": {
-    "start": "node bin/unofficial-llm-api.js",
-    "demo": "node bin/unofficial-llm-api.js --demo --providers demo",
+    "start": "node bin/unofficial-free-llm-api.js",
+    "demo": "node bin/unofficial-free-llm-api.js --demo --providers demo",
     "test": "node --test \"test/**/*.test.js\""
   },
   "devDependencies": {

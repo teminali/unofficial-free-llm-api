@@ -9,6 +9,10 @@
  * Chat runs in the same Chrome: one fresh gemini.google.com tab per call, the bridge prompt pasted into the composer, Enter,
  * and the answer read back from the page as it grows. The tab is closed when the answer is in; the conversation stays in the
  * person's Gemini history like any chat they typed themselves.
+ *
+ * With `keep` the conversation's address (gemini.google.com/app/<id>) is handed back as a `remote`, and a call made with that `remote` opens the same conversation
+ * and adds one message to it, the way a person comes back to a chat (src/sessions.js decides when a request is that). The conversations stay in the person's
+ * history, one for each session, and are never deleted from here: removing one would mean driving the page's menus.
  */
 'use strict';
 
@@ -32,6 +36,20 @@ const ANSWER_POLL_MS = 250;
 const QUIET_MS = 1500;       // the page said it was working and has stopped: the text standing still this long is the end
 const QUIET_BLIND_MS = 4000; // the page never showed it was working (a renamed selector): the text alone has to stand still longer
 const QUIET_MAX_MS = 8000;   // whatever the page's buttons say, an answer that has not moved for this long is over
+const PICKER_WAIT_MS = 10000; // how long the model picker button is waited for while linking: a signed-in page can draw it after its message box
+const PICKER_CALL_WAIT_MS = 4000; // the same on a call that reads the picker again
+const ROWS_WAIT_MS = 5000; // how long the menu's rows are waited for after the picker was opened
+const TAB_IDLE_MS = 5 * 60 * 1000; // a conversation's tab stays open this long after its last answer, like a person's tab that is left up
+const MAX_TABS = 3; // and only this many stay open at once: the oldest is closed when another conversation needs its place
+// What the page writes where an answer goes when its own request failed (seen 2026-10-22: "Sorry, something went wrong. Please try your request again." and
+// "I seem to be encountering an error. Can I try something else for you?"). It is the page's message, not the model's: handing it back as an answer made a
+// failure look like a reply. Short and of these exact shapes only, so a real answer is never taken for one.
+const PAGE_ERROR_ANSWERS = [
+  /^\s*(?:sorry,?\s+)?something went wrong\.?\s*(?:please\s+)?try\b[^.]{0,60}\.?\s*$/i,
+  /^\s*i seem to be encountering an error\.?\s*(?:can i try something else for you\??)?\s*$/i
+];
+const WAIT_TRACE_MS = 10000; // while no word of the answer has shown, what the page shows is written to the log this often, so a slow call can be read afterwards
+const FIRST_WORDS_MAX_MS = 4 * 60 * 1000; // a message that was sent and has shown no answer word and no thinking word for this long is given up on, whatever the page says it is doing
 
 // The page's own names for the parts this lane watches. Several selectors per part because Google renames them without notice;
 // every miss is logged, so a rename shows up in the run instead of as a silent empty answer.
@@ -88,7 +106,14 @@ const MODEL_OPTION_SELECTORS = [
 // left the lane offering exactly the models the account cannot use.
 const NOT_A_MODEL = /sign in|log in|all models|thinking level|settings|help|learn more|^(low|medium|high)(\s|$)/i;
 /** The model the lane offers when the page's menu could not be read at all: whatever mode the page is on. The relay's own id for it. */
-const PAGE_MODEL = { id: 'gemini', name: 'Gemini', thinking: true };
+// Names that never go stale in a client's list: they mean "the mode the page is on". `gemini-auto` is the account's own Auto row when its picker has one
+// (a free account does), and then that row is really chosen.
+const STABLE_MODELS = [
+  { id: 'gemini', name: 'Gemini (account default)', thinking: true, alias: true },
+  { id: 'gemini-auto', name: 'Gemini Auto (account default)', thinking: true, alias: true }
+];
+const MODELS_TTL_MS = 15 * 60 * 1000; // the picker is read again when the list is older than this
+const MODELS_RETRY_MS = 3 * 60 * 1000; // after a read that found nothing, sooner
 const IDLE_CLOSE_MS = 10 * 60 * 1000;
 // The driven Chrome has no one looking at it, so it must not treat its pages as unseen: Chrome slows the timers and drawing of a page it thinks is in the background,
 // and the page's own streaming of an answer slows with it. These are Chrome's own switches for that; they change nothing about what the page can see of the browser.
@@ -96,6 +121,9 @@ const BACKGROUND_FLAGS = ['--disable-background-timer-throttling', '--disable-re
 // The Chrome that answers chat runs without a window (measured 2026-10-20: a headless page stays "visible" and keeps drawing at full rate; a
 // minimized one is "hidden" and draws nothing, and macOS pulls a window placed off-screen back onto the screen). ULA_GEMINI_VISIBLE=1 shows it.
 const HEADLESS = process.env.ULA_GEMINI_VISIBLE !== '1';
+// ULA_GEMINI_MINIMAL=1 starts the driven Chrome with only the flags that driving needs (no background-rendering switches, nothing else): a way to tell whether our own
+// extra flags matter, by comparing it with an ordinary Chrome on the same profile. Diagnosis only.
+const MINIMAL = process.env.ULA_GEMINI_MINIMAL === '1';
 // The page's own way of saying nobody is signed in: a Sign in control. The signed-out window has two of them, and the app must
 // not mistake a page that merely loaded for an account that is linked.
 // Only controls that SAY "Sign in". A link that merely points at accounts.google.com is not one: a signed-in page has such links (its account menu,
@@ -111,14 +139,20 @@ function slug(name) {
 }
 
 /**
- * The picker's models for what the page's menu read. Only rows the account can answer with are offered; a locked row is never a model
- * (a free account links to its usable rows or to none, never to the ones the first message would be refused on). A link that read
- * nothing is still a link to something: the page's own current mode, so "linked" never means "linked, with no model to choose".
+ * The account's own rows for what the page's menu read. Only rows the account can answer with are offered; a locked row is never a model
+ * (a free account links to its usable rows or to none, never to the ones the first message would be refused on). None read is an empty list:
+ * the stable names (withStableNames) still stand for the page's own mode, so "linked" never means "linked, with no model to choose".
  */
 function modelsFromRead(read) {
   const names = Array.isArray(read && read.names) ? read.names : [];
-  if (!names.length) return [{ ...PAGE_MODEL }];
   return names.map((name) => ({ id: `gemini-${slug(name)}`, name, thinking: true }));
+}
+
+/** What a client is shown: `gemini` and `gemini-auto` first, always (an account's own row of the same name takes the place of the generic one), then the other rows. */
+function withStableNames(real) {
+  const rows = Array.isArray(real) ? real : [];
+  const stable = STABLE_MODELS.map((m) => rows.find((r) => r.id === m.id) || m);
+  return [...stable, ...rows.filter((r) => !STABLE_MODELS.some((m) => m.id === r.id))];
 }
 
 /** The linked model a request names: its id as listed ("gemini-3-1-pro"), or the same without the leading "gemini-". */
@@ -128,7 +162,7 @@ function modelByRef(models, ref) {
   return models.find((m) => m.id === id || m.id === `gemini-${id}`) || null;
 }
 
-function createGemini({ dataDir, log = () => {}, governor = null, onStatus = () => {}, appUrl = APP_URL, plainChromeArgs = [] }) {
+function createGemini({ dataDir, log = () => {}, governor = null, onStatus = () => {}, appUrl = APP_URL, plainChromeArgs = [], firstWordsMaxMs = FIRST_WORDS_MAX_MS, waitTraceMs = WAIT_TRACE_MS, tabIdleMs = TAB_IDLE_MS, maxTabs = MAX_TABS, modelsTtlMs = MODELS_TTL_MS }) {
   const sessionPath = () => path.join(dataDir, SESSION_FILE);
   const settingsPath = () => path.join(dataDir, SETTINGS_FILE);
   const profileDir = () => path.join(dataDir, PROFILE_DIR_NAME);
@@ -141,6 +175,50 @@ function createGemini({ dataDir, log = () => {}, governor = null, onStatus = () 
   let idleTimer = null;
   let inUse = 0; // chat calls running right now
   let probedFor = null; // the Chrome whose response shape was last logged
+  // The tabs of conversations that go on: a person keeps a conversation open in one tab, so after an answer the tab is kept (not closed and
+  // opened again by its address on the next message). Keyed by the conversation's id. A tab is out of this map while a call uses it.
+  const tabs = new Map();
+  let tabTimer = null;
+
+  /** The open tab of a conversation, taken out of the map for the call that uses it; null when there is none (or it is gone). */
+  function takeTab(id) {
+    const t = tabs.get(id);
+    if (!t) return null;
+    tabs.delete(id);
+    return t.page.closed ? null : t;
+  }
+
+  /** Closes tabs that were idle too long, and the oldest ones beyond the few that may stay open. */
+  async function trimTabs() {
+    const now = Date.now();
+    const closing = [];
+    for (const [id, t] of [...tabs]) {
+      if (t.page.closed || now - t.usedAt >= tabIdleMs) { tabs.delete(id); closing.push(t.page); }
+    }
+    while (tabs.size > maxTabs) {
+      const [oldest] = [...tabs].sort((a, b) => a[1].usedAt - b[1].usedAt);
+      tabs.delete(oldest[0]);
+      closing.push(oldest[1].page);
+    }
+    await Promise.all(closing.map((pg) => pg.close().catch(() => {})));
+    if (tabTimer) { clearTimeout(tabTimer); tabTimer = null; }
+    if (tabs.size) {
+      const next = Math.min(...[...tabs.values()].map((t) => t.usedAt)) + tabIdleMs - now + 50;
+      tabTimer = setTimeout(() => { tabTimer = null; trimTabs().catch(() => {}); }, Math.max(100, next));
+      if (typeof tabTimer.unref === 'function') tabTimer.unref();
+    }
+  }
+
+  async function keepTab(id, page) {
+    tabs.set(id, { page, usedAt: Date.now() });
+    await trimTabs();
+  }
+
+  /** Forgets every tab at once (the Chrome they lived in is gone). */
+  function forgetTabs() {
+    tabs.clear();
+    if (tabTimer) { clearTimeout(tabTimer); tabTimer = null; }
+  }
   let thinkingApplied = null; // the level this Chrome's page was last put on (the page keeps it, so it is set once per Chrome, not per call)
   let thinkingNote = null; // a sentence for the Accounts page when the page would not take the level
   let signIn = null; // the plain Chrome the person signs in on, while a link waits
@@ -206,7 +284,7 @@ function createGemini({ dataDir, log = () => {}, governor = null, onStatus = () 
     if (!s || !s.linked) return { linked: false, models: [], usage, linking, linkNote: linking ? linkNote : null, ...thinking };
     return {
       linked: true,
-      models: s.expired ? [] : (Array.isArray(s.models) ? s.models : []),
+      models: listModels(),
       linkedAt: s.linkedAt || null,
       expiresAt: null,
       consentAckAt: s.consentAckAt || null,
@@ -223,7 +301,66 @@ function createGemini({ dataDir, log = () => {}, governor = null, onStatus = () 
   function listModels() {
     const s = readSession();
     if (!s || !s.linked || s.expired) return [];
-    return Array.isArray(s.models) ? s.models : [];
+    // (a link made by an older version stored the one-model fallback as a row called "gemini": it is the stable name now, not a row)
+    const real = (Array.isArray(s.models) ? s.models : []).filter((m) => m.id !== 'gemini');
+    return withStableNames(real);
+  }
+
+  /** Whether the stored list is old enough to be read again from the page's picker. */
+  function modelsStale(s) {
+    if (!s || !s.linked || s.expired) return false;
+    const age = Date.now() - (Number(s.modelsCheckedAt) || 0);
+    return age > (s.modelsOk === false ? Math.min(MODELS_RETRY_MS, modelsTtlMs) : modelsTtlMs);
+  }
+
+  /** Keeps what a read of the picker found. A read that found rows replaces the list (an account can lose a row as well as gain one); one that found none leaves the list as it is and is tried again sooner. */
+  function applyModelsRead(read) {
+    const s = readSession();
+    if (!s || !s.linked || s.expired) return false;
+    const now = Date.now();
+    if (read && read.names.length) {
+      const models = modelsFromRead(read);
+      const changed = JSON.stringify((Array.isArray(s.models) ? s.models : []).map((m) => m.id)) !== JSON.stringify(models.map((m) => m.id));
+      writeSession({ ...s, models, modelsCheckedAt: now, modelsOk: true });
+      if (changed) { log(`gemini: the model picker offers: ${models.map((m) => m.name).join(', ')}`); emit(); }
+      return true;
+    }
+    writeSession({ ...s, modelsCheckedAt: now, modelsOk: false });
+    return false;
+  }
+
+  /**
+   * Reads the picker again in the background, when the list is old enough (or `force`) and the lane is idle: a client that lists the models gets what there is
+   * at once, and the list is right the next time. One read at a time; a lane that is busy, linking or stopping leaves it for later.
+   */
+  let refreshing = null;
+  async function refreshModels({ force = false } = {}) {
+    const s = readSession();
+    if (!s || !s.linked || s.expired || stopped) return false;
+    if (!force && !modelsStale(s)) return false;
+    if (refreshing) return refreshing;
+    if (inUse > 0 || linkWaiting) return false;
+    refreshing = (async () => {
+      inUse += 1;
+      let page = null;
+      try {
+        const b = await ensureBrowser();
+        page = await b.newPage();
+        await page.goto(appUrl).catch(() => {});
+        const composer = await waitForComposer(page, 30000);
+        if (!composer || await looksSignedOut(page)) { applyModelsRead(null); return false; }
+        return applyModelsRead(await scrapeModels(page, { waitMs: PICKER_WAIT_MS }));
+      } catch (err) {
+        log('gemini: the model list could not be read again: ' + String((err && err.message) || err));
+        return false;
+      } finally {
+        if (page) await page.close().catch(() => {});
+        inUse -= 1;
+        refreshing = null;
+        armIdleClose();
+      }
+    })();
+    return refreshing;
   }
 
   async function ensureBrowser() {
@@ -237,9 +374,10 @@ function createGemini({ dataDir, log = () => {}, governor = null, onStatus = () 
         executablePath: exe,
         userDataDir: profileDir(),
         args: [...(HEADLESS ? ['--headless=new'] : []), ...BACKGROUND_FLAGS],
+        minimal: MINIMAL,
         log
       });
-      launched.onDisconnect(() => { browser = null; thinkingApplied = null; });
+      launched.onDisconnect(() => { browser = null; thinkingApplied = null; forgetTabs(); });
       browser = launched;
       log('gemini: chrome started with the program\'s profile');
       armIdleClose();
@@ -262,6 +400,7 @@ function createGemini({ dataDir, log = () => {}, governor = null, onStatus = () 
       const b = browser;
       browser = null;
       thinkingApplied = null; // a Chrome started later has not been told the level
+      forgetTabs();
       b.close().catch(() => {});
     }, IDLE_CLOSE_MS);
     if (typeof idleTimer.unref === 'function') idleTimer.unref();
@@ -310,12 +449,36 @@ function createGemini({ dataDir, log = () => {}, governor = null, onStatus = () 
    * A row the account has locked (read on a signed-in window 2026-10-20: "3.1 Pro" and "4 Argon" behind a lock on a free account)
    * is reported apart, because offering it would sell a model the first message then fails on.
    */
-  async function scrapeModels(page) {
-    const button = await firstOf(page, MODEL_BUTTON_SELECTORS, 'model picker button');
-    if (!button) return { names: [], locked: [] };
+  async function scrapeModels(page, { waitMs = PICKER_WAIT_MS } = {}) {
+    // The button is waited for, not asked once: a signed-in page can draw it a moment after the message box, and a single early look
+    // left the account linked with the one-model fallback for good.
+    let button = null;
+    for (const until = Date.now() + waitMs; ;) {
+      button = await firstOfQuiet(page, MODEL_BUTTON_SELECTORS);
+      if (button || Date.now() > until) break;
+      await new Promise((r) => setTimeout(r, WAIT_POLL_MS));
+    }
+    if (!button) {
+      log(`gemini: no model picker button matched after ${Math.round(waitMs / 1000)} s (${MODEL_BUTTON_SELECTORS.join(' | ')}); the page offers: ${await describePicker(page)}`);
+      return { names: [], locked: [] };
+    }
     await button.click().catch(() => null);
-    await new Promise((r) => setTimeout(r, 1200));
-    const read0 = await page.evaluate((sels, notModel) => {
+    let read0 = { names: [], lockedNames: [] };
+    for (const until = Date.now() + ROWS_WAIT_MS; ;) {
+      read0 = await readRows(page);
+      if (read0.names.length || read0.lockedNames.length || Date.now() > until) break;
+      await new Promise((r) => setTimeout(r, 400));
+    }
+    const read = { names: read0.names || [], locked: read0.lockedNames || [] };
+    if (!read.names.length && !read.locked.length) log(`gemini: the picker was opened but no rows matched (${MODEL_OPTION_SELECTORS.join(' | ')}); the page offers: ${await describePicker(page)}`);
+    await page.keyboard.press('Escape').catch(() => {});
+    await new Promise((r) => setTimeout(r, 400));
+    return finishRead(page, button, read);
+  }
+
+  /** The rows of the open menu, by the page's own names for them. */
+  async function readRows(page) {
+    return page.evaluate((sels, notModel) => {
       const reject = new RegExp(notModel, 'i');
       const isLocked = (el) => el.getAttribute('aria-disabled') === 'true'
         || Boolean(el.querySelector('[aria-label*="lock" i], [data-icon*="lock" i], [fonticon*="lock" i]'));
@@ -334,9 +497,10 @@ function createGemini({ dataDir, log = () => {}, governor = null, onStatus = () 
       }
       return { names, lockedNames: lockedNames.filter((n) => !names.includes(n)) };
     }, MODEL_OPTION_SELECTORS, NOT_A_MODEL.source).catch(() => ({ names: [], lockedNames: [] }));
-    const read = { names: read0.names || [], locked: read0.lockedNames || [] };
-    await page.keyboard.press('Escape').catch(() => {});
-    await new Promise((r) => setTimeout(r, 400));
+  }
+
+  /** What is left to do with a picker read: nothing when rows were read; otherwise the button's own label names the model in use. */
+  async function finishRead(page, button, read) {
     if (!read.names.length && !read.locked.length) {
       // The menu did not open or renamed itself: the button's own label still names the model in use right now.
       const label = await button.evaluate((el) => (el.innerText || el.getAttribute('aria-label') || '').split('\n').pop().trim()).catch(() => '');
@@ -488,14 +652,23 @@ function createGemini({ dataDir, log = () => {}, governor = null, onStatus = () 
           const cls = raw.split(/\s+/).filter(Boolean).slice(0, 3).join('.');
           const aria = el.getAttribute('aria-label');
           const exp = el.getAttribute('aria-expanded');
-          let s = el.tagName.toLowerCase() + (cls ? '.' + cls : '') + (aria ? `[${aria.slice(0, 24)}]` : '') + (exp !== null ? `{expanded=${exp}}` : '');
+          let s = el.tagName.toLowerCase() + (cls ? '.' + cls : '') + (aria ? `[${aria.slice(0, 24)}]` : '') + (exp !== null ? `{expanded=${exp}}` : '') + '#' + (el.innerText || '').trim().length;
           if (depth < 4) {
             const kids = [...el.children].slice(0, 8).map((c) => brief(c, depth + 1));
             if (kids.length) s += '(' + kids.join(',') + ')';
           }
           return s;
         };
-        return brief(root, 0).slice(0, 2400);
+        // Where the last words of the response sit, by tag, class, role and text LENGTH: a control the page adds after a question shows up here.
+        const panel = root.querySelector('.markdown-main-panel');
+        const tail = [...root.querySelectorAll('*')].filter((el) => [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim())).slice(-5).map((el) => {
+          const raw = el.className && typeof el.className === 'object' ? el.className.baseVal || '' : String(el.className || '');
+          const cls = raw.split(/\s+/).filter(Boolean).slice(0, 2).join('.');
+          const role = el.getAttribute('role');
+          const own = [...el.childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent.trim()).join('').length;
+          return el.tagName.toLowerCase() + (cls ? '.' + cls : '') + (role ? `[role=${role}]` : '') + '#' + own + (panel && panel.contains(el) ? '{in answer}' : '{outside answer}');
+        });
+        return brief(root, 0).slice(0, 2400) + ' | last elements with their own text: ' + tail.join(', ');
       });
     } catch (err) {
       return 'unreadable: ' + String((err && err.message) || err).slice(0, 80);
@@ -506,6 +679,7 @@ function createGemini({ dataDir, log = () => {}, governor = null, onStatus = () 
   async function closeDriven() {
     if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
     thinkingApplied = null;
+    forgetTabs();
     if (browser) { const b = browser; browser = null; await b.close().catch(() => {}); }
   }
 
@@ -632,8 +806,8 @@ function createGemini({ dataDir, log = () => {}, governor = null, onStatus = () 
         const read = await scrapeModels(page);
         if (read.locked.length) log(`gemini: the account keeps these locked, so they are not offered: ${read.locked.join(', ')}`);
         const models = modelsFromRead(read);
-        writeSession({ linked: true, models, linkedAt: new Date().toISOString(), consentAckAt: waiting.consentAckAt, expired: false, expiredReason: null });
-        log(`gemini: linked with ${models.length} model(s): ${models.map((m) => m.name).join(', ')}${read.names.length ? '' : ' (the picker could not be read: the page\'s own mode is used)'}`);
+        writeSession({ linked: true, models, modelsCheckedAt: models.length ? Date.now() : 0, modelsOk: models.length > 0, linkedAt: new Date().toISOString(), consentAckAt: waiting.consentAckAt, expired: false, expiredReason: null });
+        log(`gemini: linked with ${models.length} model(s): ${models.map((m) => m.name).join(', ')}${models.length ? '' : ' (the picker could not be read: gemini and gemini-auto use the page\'s own mode)'}`);
         await page.close().catch(() => {});
         page = null;
         armIdleClose();
@@ -687,11 +861,24 @@ function createGemini({ dataDir, log = () => {}, governor = null, onStatus = () 
     emit();
   }
 
+  /** Whether an address is a conversation page of this app (its own origin, under /app/). */
+  function sameApp(url) {
+    try { const u = new URL(url); return u.origin === appOrigin && /^\/app\/[A-Za-z0-9_-]{4,}$/.test(u.pathname); } catch (_) { return false; }
+  }
+  /** The conversation the page is on once an answer is in: { id, url }, or null when the page has no conversation address (nothing to continue). */
+  function conversationOf(url) {
+    try {
+      const u = new URL(url);
+      const m = /^\/app\/([A-Za-z0-9_-]{4,})$/.exec(u.pathname);
+      return u.origin === appOrigin && m ? { id: m[1], url: `${u.origin}/app/${m[1]}` } : null;
+    } catch (_) { return null; }
+  }
+
   /**
    * One chat completion on the page. The prompt goes into the composer as one paste (a long bridge prompt typed key by key would
    * take minutes), Enter sends it, and the answer is read back as it grows: every poll sends only the part that is new.
    */
-  async function completeOnce({ prompt, thinking, signal, model = null, thinkingLevel: levelAsked = null, onDelta = () => {} }) {
+  async function completeOnce({ prompt, thinking, signal, model = null, thinkingLevel: levelAsked = null, onDelta = () => {}, keep = false, remote = null }) {
     const s = readSession();
     if (!s || !s.linked) return { ok: false, authExpired: true, error: 'Gemini is not linked. Link it on the Accounts page.' };
     if (s.expired) return { ok: false, authExpired: true, error: s.expiredReason || 'Your Gemini sign-in expired. Sign in again on the Accounts page.' };
@@ -699,8 +886,12 @@ function createGemini({ dataDir, log = () => {}, governor = null, onStatus = () 
     if (signIn && !linkWaiting) await closeSignIn();
     let b;
     try { b = await ensureBrowser(); } catch (err) { return { ok: false, retryable: false, error: String((err && err.message) || err) }; }
+    // A conversation that is continued is opened at its own address, and only an address of this app's own origin is ever opened.
+    const resume = remote && remote.id && remote.url && sameApp(remote.url) ? remote : null;
+    // Its tab, when it is still open from the last answer: the page is not loaded again (a fresh load cost 5 to 11 s and looks like a new visit each time).
+    const kept = resume ? takeTab(resume.id) : null;
     let page;
-    try { page = await b.newPage(); } catch (err) { return { ok: false, retryable: false, error: String((err && err.message) || err) }; }
+    try { page = kept ? kept.page : await b.newPage(); } catch (err) { return { ok: false, retryable: false, error: String((err && err.message) || err) }; }
     inUse += 1;
     // A page that asks the person for something (a cookie question, a human check) stays open so they can answer it; every other
     // page is closed when the call ends.
@@ -708,6 +899,8 @@ function createGemini({ dataDir, log = () => {}, governor = null, onStatus = () 
     let showAfter = false;
     let sentAnswer = '';
     let sentThinking = '';
+    let net = null; // the listener on the page's requests while a message is out (see watchRequests)
+    let keepTabFor = null; // the conversation whose tab stays open after this call
     // Google's own interruptions have addresses of their own (its consent page, and the /sorry page it sends automated traffic to): told
     // by the address they need no message box to be found first.
     const interruptionAt = (url) => (/^https?:\/\/consent\.google\./.test(url) ? 'consent' : (/^https?:\/\/[^/]+\/sorry(\/|$|\?)/.test(url) ? 'check' : null));
@@ -725,7 +918,9 @@ function createGemini({ dataDir, log = () => {}, governor = null, onStatus = () 
     const left = () => Boolean(signal && signal.aborted);
     try {
       if (left()) return { ok: false, cancelled: true, sent: false };
-      await page.goto(appUrl).catch(() => {});
+      // A kept tab already shows its conversation; anything else (a new one, a tab that wandered off) is opened at its address.
+      const onItsConversation = Boolean(kept) && String(page.url()).includes(`/app/${resume.id}`);
+      if (!onItsConversation) await page.goto(resume ? resume.url : appUrl).catch(() => {});
       const early = interruptionAt(page.url());
       if (early) return askPerson(early);
       let composer = await waitForComposer(page, 30000);
@@ -744,14 +939,19 @@ function createGemini({ dataDir, log = () => {}, governor = null, onStatus = () 
         markExpired();
         return { ok: false, authExpired: true, error: 'The Gemini sign-in expired. Sign in again on the Accounts page.' };
       }
+      // The list of models is kept live: when it is older than a few minutes (or a link could not read the picker, a page still drawing it) the picker is read
+      // again while this page is open anyway. Whatever the read finds replaces the list; the next call can choose among the account's rows.
+      if (modelsStale(readSession())) applyModelsRead(await scrapeModels(page, { waitMs: PICKER_CALL_WAIT_MS }).catch(() => null));
+      // Gemini sends a conversation that is not there (deleted, or not this account's) to a new chat: the answer would then land in the wrong place.
+      if (resume && !String(await page.evaluate(() => location.href).catch(() => page.url())).includes(resume.id)) return { ok: false, error: 'The Gemini conversation is not there any more.' };
       marks.ready = Date.now();
       // A fresh tab is already a fresh chat: the New chat button is not pressed (it cost a click and a fixed wait of one and a half seconds).
       // The page keeps the mode of the last chat; the person chose a model, so the page is put on it.
       // The relay names the model without its provider prefix ("3-1-pro"); the linked list keeps ids whole. A lookup by the whole id never
       // matched, so the page stayed on whatever mode it was last on, whatever the picker said. The page-mode model has no menu row to click.
-      const wanted = modelByRef(s.models, model);
+      const wanted = modelByRef(listModels(), model);
       let modelStep = 'none';
-      if (wanted && wanted.id !== PAGE_MODEL.id) modelStep = await chooseModel(page, wanted.name);
+      if (wanted && !wanted.alias) modelStep = await chooseModel(page, wanted.name);
       else if (!wanted && model) log(`gemini: the linked list has no model "${model}"; the page answers with the mode it is on`);
       marks.model = Date.now();
       // How long Gemini thinks. The page keeps the level, so it is set once per Chrome and again only when the person changes it (the Accounts page, or reasoning_effort on a request).
@@ -773,7 +973,12 @@ function createGemini({ dataDir, log = () => {}, governor = null, onStatus = () 
       // The point of no return: once the message is in the box and Enter is pressed the account is spent. A caller that left while the page was
       // loading or the model was being chosen gets nothing sent.
       if (left()) return { ok: false, cancelled: true, sent: false };
-      await composer.click();
+      // What the page already shows (a continued conversation has the earlier turns on it): the answer to read is the one after these.
+      const baseline = resume ? await page.evaluate(() => ({ responses: document.querySelectorAll('model-response').length, queries: document.querySelectorAll('user-query').length })).catch(() => null) : null;
+      // The page's own requests from here on, to tell Google being slow from the page being late (written to the log with the timings).
+      net = await page.watchRequests().catch(() => null);
+      // The message box is clicked as a click is made (a mouse event at its middle); the page calling element.click() is the fallback.
+      await composer.mouseClick().catch(() => composer.click());
       // A synthetic click does not always move the caret the way a hand does, and the paste lands wherever focus is: focus is
       // set and checked before the text goes in.
       const focused = await composer.evaluate((el) => { el.focus(); return document.activeElement === el; }).catch(() => false);
@@ -788,14 +993,16 @@ function createGemini({ dataDir, log = () => {}, governor = null, onStatus = () 
       let openFence = false; // the answer ends inside a code block whose closing fence was left off while it grew
       let sawRunning = false;
       let sawSent = false;
+      let lastWordAt = startedAt; // when the page last showed a new word of the answer or of the thinking
+      let lastTraceAt = startedAt;
       for (;;) {
         if (signal && signal.aborted) return { ok: false, cancelled: true, sent: true };
-        const state = await readPage(page).catch(() => null);
+        const state = await readPage(page, baseline).catch(() => null);
         if (!state) return { ok: false, error: 'The Gemini page went away mid-answer.' };
         if (state.consent) return askPerson('consent');
         if (state.blocked) return askPerson('check');
-        if (state.running) sawRunning = true;
-        if (state.sent) sawSent = true;
+        if (state.running) { sawRunning = true; if (!marks.runningSeen) marks.runningSeen = Date.now(); }
+        if (state.sent) { sawSent = true; if (!marks.sentSeen) marks.sentSeen = Date.now(); }
         openFence = Boolean(state.openFence);
         if (state.thoughtToggle && !expandedThinking) { expandedThinking = true; await expandThinking(page).catch(() => {}); }
         // The page is the truth: what it shows now is the answer so far. Text only ever grows on the way to the relay (what was sent cannot be taken
@@ -804,10 +1011,12 @@ function createGemini({ dataDir, log = () => {}, governor = null, onStatus = () 
         // and the call hung until the relay gave up (seen 2026-10-20 once the polling got faster).
         if (state.thinking !== sentThinking) {
           if (state.thinking.length > sentThinking.length && state.thinking.startsWith(sentThinking)) onDelta({ type: 'think', text: state.thinking.slice(sentThinking.length) });
+          if (state.thinking.length > sentThinking.length) lastWordAt = Date.now();
           sentThinking = state.thinking;
         }
         if (state.answer !== sentAnswer) {
           if (state.answer.length > sentAnswer.length && state.answer.startsWith(sentAnswer)) onDelta({ type: 'answer', text: state.answer.slice(sentAnswer.length) });
+          if (state.answer.length > sentAnswer.length) lastWordAt = Date.now();
           sentAnswer = state.answer;
           if (sentAnswer && !marks.first) marks.first = Date.now();
         }
@@ -820,37 +1029,96 @@ function createGemini({ dataDir, log = () => {}, governor = null, onStatus = () 
         // has to stand still twice as long before a slow stream is taken for a finished one.
         if (quietFor >= (sawRunning ? QUIET_MS : QUIET_BLIND_MS) && (sawRunning || sawSent)) break;
         if (quietFor >= QUIET_MAX_MS) break;
+        // A slow start is written down as it happens: what the page shows every few seconds (flags, counts, the words of a dialog, never the conversation).
+        if (!sentAnswer && Date.now() - lastTraceAt >= waitTraceMs) {
+          lastTraceAt = Date.now();
+          log(`gemini: still waiting ${Math.round((lastTraceAt - startedAt) / 1000)} s after sending: ${await describeStall(page, baseline, state)}; requests: ${net ? net.summary() : 'not watched'}`);
+        }
         // Nothing arrived and the page is idle: the chat refused the message rather than answering it.
         if (!state.running && !sentAnswer && Date.now() - startedAt > 120000) {
+          log('gemini: stalled (idle, no answer): ' + await describeStall(page, baseline, state) + '; requests: ' + (net ? net.summary() : 'not watched'));
           return { ok: false, error: 'Gemini sent no answer in two minutes.' };
+        }
+        // The page says it is working and nothing ever shows: a page waiting on something this program cannot see (a question, a check, a dead stream).
+        // Without a limit the call stood until the 15 minute cap of the relay.
+        if (!sentAnswer && Date.now() - lastWordAt > firstWordsMaxMs) {
+          log('gemini: stalled (working, no words): ' + await describeStall(page, baseline, state) + '; requests: ' + (net ? net.summary() : 'not watched'));
+          return { ok: false, error: `Gemini showed no words for ${Math.round(firstWordsMaxMs / 1000)} seconds after the message was sent. It may be waiting on something in its page: see the log line that starts with "gemini: stalled".` };
         }
         await new Promise((r) => setTimeout(r, ANSWER_POLL_MS));
       }
       if (!sentAnswer) return { ok: false, error: 'Gemini answered with nothing.' };
+      if (sentAnswer.length <= 120 && PAGE_ERROR_ANSWERS.some((re) => re.test(sentAnswer))) {
+        log('gemini: the page answered with its own error message');
+        return { ok: false, error: 'Gemini answered with its own error message ("Sorry, something went wrong"). Try again in a moment.' };
+      }
       // Where the time of this call went, so the next slow one can be read instead of guessed at.
       marks.done = Date.now();
       const ms = (a, b) => (a && b ? b - a : 0);
-      log(`gemini: call took ${marks.done - marks.start} ms: page and message box ${ms(marks.start, marks.ready)}, model (${modelStep}) ${ms(marks.ready, marks.model)}, thinking level (${levelStep}) ${ms(marks.model, marks.level)}, typing and sending ${ms(marks.level, marks.sent)}, waiting for the first words ${ms(marks.sent, marks.first)}, writing the answer ${ms(marks.first, marks.done) - (quietSince ? marks.done - quietSince : 0)}, settling ${quietSince ? marks.done - quietSince : 0}`);
+      log(`gemini: call took ${marks.done - marks.start} ms: page and message box ${ms(marks.start, marks.ready)}, model (${modelStep}) ${ms(marks.ready, marks.model)}, thinking level (${levelStep}) ${ms(marks.model, marks.level)}, typing and sending ${ms(marks.level, marks.sent)}, message shown ${ms(marks.sent, marks.sentSeen)} ms after sending, page working ${ms(marks.sent, marks.runningSeen)} ms after sending, waiting for the first words ${ms(marks.sent, marks.first)}, writing the answer ${ms(marks.first, marks.done) - (quietSince ? marks.done - quietSince : 0)}, settling ${quietSince ? marks.done - quietSince : 0}; requests: ${net ? net.summary() : 'not watched'}`);
       if (!sawSent) log('gemini: the page never showed the sent message; that selector may have been renamed');
       if (!sawRunning) log('gemini: the page never showed it was working; the end of the answer was judged by the text standing still');
-      if (!sentThinking) {
-        log('gemini: the page showed no thinking panel for this model');
-        if (probedFor !== browser) { probedFor = browser; log('gemini: shape of the last response (no text), to find the page\'s name for its thinking: ' + await describeResponse(page)); }
-      }
-      return { ok: true, text: openFence ? sentAnswer + '\n```' : sentAnswer, thinking: sentThinking || undefined };
+      if (!sentThinking) log('gemini: the page showed no thinking panel for this model');
+      // The shape of a real response (tags, classes, text LENGTHS, no text) once per Chrome: where the thinking, the answer and anything the page adds
+      // after it (suggestion chips, labels) sit, so a selector that reads too much or too little can be fixed from the log.
+      if (probedFor !== browser) { probedFor = browser; log('gemini: shape of the last response (tag.class#text length, no text): ' + await describeResponse(page)); }
+      const next = keep ? conversationOf(await page.evaluate(() => location.href).catch(() => page.url())) : null;
+      if (next) keepTabFor = next.id;
+      return { ok: true, text: openFence ? sentAnswer + '\n```' : sentAnswer, thinking: sentThinking || undefined, ...(keep ? { remote: next } : {}) };
     } catch (err) {
       return { ok: false, error: String((err && err.message) || err) };
     } finally {
       inUse -= 1;
-      if (!leaveOpen) await page.close().catch(() => {});
+      if (net) await net.stop().catch(() => {});
+      if (keepTabFor && !leaveOpen && !page.closed) await keepTab(keepTabFor, page).catch(() => {});
+      else if (!leaveOpen) await page.close().catch(() => {});
       if (showAfter) { showing = showPersonThePage().catch(() => {}); }
       armIdleClose();
     }
   }
 
+  /** What the page offers where the model picker should be, for the log: labels of the buttons that look like one, and how many menu parts exist. No conversation text. */
+  async function describePicker(page) {
+    try {
+      return await page.evaluate(() => {
+        const aria = (b) => b.getAttribute('aria-label') || '';
+        const modelish = /^\s*(gemini\s*)?\d(\.\d)?\s*(flash|pro|argon|lite|ultra|nano)/i;
+        const found = [...document.querySelectorAll('button, [role="button"], [role="combobox"]')]
+          .filter((b) => /mode|model|pick|select/i.test(aria(b)) || modelish.test((b.innerText || '').trim()))
+          .slice(0, 8)
+          .map((b) => `${b.tagName.toLowerCase()}[${aria(b).slice(0, 40)}]${modelish.test((b.innerText || '').trim()) ? (b.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 24) : ''}`);
+        const counts = ['[role="menu"]', '[role="listbox"]', 'gem-menu', 'mat-menu', '[role="menuitem"]', '[role="option"]'].map((q) => `${q}:${document.querySelectorAll(q).length}`).join(' ');
+        return JSON.stringify({ buttons: found, counts });
+      });
+    } catch (err) { return 'unreadable: ' + String((err && err.message) || err).slice(0, 80); }
+  }
+
+  /** What the page looks like when an answer does not come, for the log: counts, flags and the words of any dialog that is open (short). Never the conversation. */
+  async function describeStall(page, baseline, state) {
+    try {
+      const more = await page.evaluate(() => {
+        const shown = (el) => { const b = el.getBoundingClientRect(); return b.width > 0 && b.height > 0; };
+        const dialogs = [...document.querySelectorAll('[role="dialog"], [aria-modal="true"], mat-dialog-container')].filter(shown).map((d) => (d.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 120));
+        const send = document.querySelector('button[aria-label*="Send" i]');
+        const box = document.querySelector('rich-textarea, [contenteditable="true"], textarea');
+        return {
+          at: location.origin + location.pathname,
+          title: document.title.slice(0, 60),
+          users: document.querySelectorAll('user-query').length,
+          responses: document.querySelectorAll('model-response').length,
+          sendButton: send ? (send.disabled || send.getAttribute('aria-disabled') === 'true' ? 'disabled' : 'enabled') : 'none',
+          boxChars: box ? (box.innerText || box.value || '').length : -1,
+          dialogs
+        };
+      });
+      const flags = state ? { running: Boolean(state.running), sent: Boolean(state.sent), blocked: Boolean(state.blocked), consent: Boolean(state.consent), answerChars: String(state.answer || '').length, thinkingChars: String(state.thinking || '').length } : {};
+      return JSON.stringify({ ...flags, ...more });
+    } catch (err) { return 'could not read the page: ' + String((err && err.message) || err).slice(0, 80); }
+  }
+
   /** Reads what the page shows right now: the answer so far, the thinking so far, whether it is still working, and a refusal. */
-  async function readPage(page) {
-    return page.evaluate((answers, thoughts, running, sent) => {
+  async function readPage(page, baseline = null) {
+    return page.evaluate((answers, thoughts, running, sent, before) => {
       const last = (list) => {
         for (const sel of list) {
           const nodes = document.querySelectorAll(sel);
@@ -881,6 +1149,7 @@ function createGemini({ dataDir, log = () => {}, governor = null, onStatus = () 
             if (n.nodeType === 3) { text += n.textContent.replace(/\s+/g, ' '); continue; }
             if (n.nodeType !== 1) continue;
             const tag = n.tagName.toLowerCase();
+            if (tag === 'button' || n.getAttribute('role') === 'button') continue; // a control the page draws in the answer (a quick reply), not words of the model
             if (tag === 'pre' || tag === 'code-block') {
               const code = n.querySelector('pre code') || n.querySelector('code') || n.querySelector('pre') || n;
               closeText();
@@ -899,11 +1168,13 @@ function createGemini({ dataDir, log = () => {}, governor = null, onStatus = () 
         const joined = parts.map((o, i) => (o.code ? '\n```\n' + o.v + (i === tail ? '' : '\n```\n') : prose(o.v))).join('').replace(/^\n+|\n+$/g, '').replace(/\n{3,}/g, '\n\n');
         return { text: joined, openFence: tail >= 0 };
       };
-      const answerEl = last(answers);
+      // In a continued conversation the page still shows the earlier answers: until a new response has appeared there is no answer to read yet.
+      const fresh = !before || (document.querySelectorAll('model-response').length > before.responses);
+      const answerEl = fresh ? last(answers) : null;
       // The thinking: the page's listed names first. Then anything in the last response that the page itself calls a thought or thinking (a name the list
       // does not know yet), outside the answer, not a button or an icon or the working animation, and more than a label.
-      const responseEl = last(['model-response']);
-      let thoughtText = (last(thoughts) || { innerText: '' }).innerText.trim();
+      const responseEl = fresh ? last(['model-response']) : null;
+      let thoughtText = fresh ? (last(thoughts) || { innerText: '' }).innerText.trim() : '';
       if (!thoughtText && responseEl) {
         let best = '';
         for (const el of responseEl.querySelectorAll('[class*="thought" i], [class*="thinking" i], model-thoughts, thoughts-content, [data-test-id*="thought" i]')) {
@@ -917,19 +1188,27 @@ function createGemini({ dataDir, log = () => {}, governor = null, onStatus = () 
       }
       // A collapsed "Show thinking" toggle in the response: the lane presses it once, so the page shows the thinking it keeps.
       const thoughtToggle = Boolean(responseEl && [...responseEl.querySelectorAll('button')].some((b) => b.getAttribute('aria-expanded') === 'false' && /thinking|thoughts/i.test(b.innerText || b.getAttribute('aria-label') || '')));
+      // Controls the page draws inside the answer (a quick reply such as "Yes" under a question, a copy button) are not words of the model. They are hidden for the
+      // instant of the read, in the same turn of the script, so nothing is painted between and the page is left as it was.
+      const textWithoutControls = (el) => {
+        if (!el) return '';
+        const hidden = [...el.querySelectorAll('button, [role="button"]')].map((c) => [c, c.style.display]);
+        for (const [c] of hidden) c.style.display = 'none';
+        try { return el.innerText.trim(); } finally { for (const [c, d] of hidden) c.style.display = d; }
+      };
       const hasCode = Boolean(answerEl && answerEl.querySelector('pre, code-block'));
       const raw = hasCode ? rawOf(answerEl) : null;
       return {
-        answer: raw ? raw.text : (answerEl || { innerText: '' }).innerText.trim(),
+        answer: raw ? raw.text : textWithoutControls(answerEl),
         openFence: Boolean(raw && raw.openFence),
         thinking: thoughtText,
         thoughtToggle,
         running: runningNow,
-        sent: shown(last(sent)) || Boolean((last(sent) || { innerText: '' }).innerText.trim()),
+        sent: before ? document.querySelectorAll(sent[0]).length > before.queries : (shown(last(sent)) || Boolean((last(sent) || { innerText: '' }).innerText.trim())),
         consent: /(^|\.)consent\.google\./.test(location.hostname) || /before you continue/i.test(dialogs),
         blocked: /^\/sorry(\/|$)/.test(location.pathname) || Boolean(document.querySelector('iframe[src*="recaptcha" i], iframe[title*="recaptcha" i]')) || /unusual traffic|verify you are|not a robot|captcha/i.test(dialogs)
       };
-    }, ANSWER_SELECTORS, THINKING_SELECTORS, RUNNING_SELECTORS, SENT_SELECTORS);
+    }, ANSWER_SELECTORS, THINKING_SELECTORS, RUNNING_SELECTORS, SENT_SELECTORS, baseline);
   }
 
   function token() {
@@ -946,7 +1225,15 @@ function createGemini({ dataDir, log = () => {}, governor = null, onStatus = () 
     await closeDriven();
   }
 
-  return { status, listModels, link, finishLink, setThinkingLevel, unlink, markExpired, resetUsage, setDailyCap, completeOnce, token, stop };
+  /** A conversation that ended here stays in the person's Gemini history (nothing is sent to remove it); only its open tab is closed. */
+  const closeSession = async (remote) => {
+    const t = remote && remote.id ? tabs.get(remote.id) : null;
+    if (!t) return;
+    tabs.delete(remote.id);
+    await t.page.close().catch(() => {});
+  };
+
+  return { status, listModels, link, finishLink, setThinkingLevel, unlink, markExpired, resetUsage, setDailyCap, completeOnce, closeSession, tabCount: () => tabs.size, refreshModels, sessions: true, token, stop };
 }
 
 module.exports = { createGemini, SESSION_FILE, PROFILE_DIR_NAME };

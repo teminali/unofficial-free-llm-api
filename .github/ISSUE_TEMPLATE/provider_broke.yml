@@ -25,10 +25,10 @@ body:
     id: log
     attributes:
       label: Log lines
-      description: Output of `ULA_DEBUG=1 unofficial-llm-api` around the failure.
+      description: Output of `ULA_DEBUG=1 unofficial-free-llm-api` around the failure.
       render: text
   - type: input
     id: version
     attributes:
       label: Version, Node.js and Chrome versions
-      placeholder: 0.1.0, Node 22.12, Chrome 130
+      placeholder: 0.2.0, Node 22.12, Chrome 130

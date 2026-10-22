@@ -33,13 +33,19 @@ const user = (text) => ({ role: 'user', content: text });
 const WEATHER = [{ type: 'function', function: { name: 'get_weather', description: 'Current weather for a city', parameters: { type: 'object', properties: { city: { type: 'string' } }, required: ['city'] } } }];
 const skipChrome = chromeExecutable() ? false : 'Chrome is not installed';
 
-async function boot({ link = 'session', pace = FAST } = {}) {
+// `sessions` is off here: these tests are about one request on one chat, the way every request ran before sessions (test/deepseek_sessions.test.js is about sessions).
+// The Chrome that checks the sign-in is told what to be: hidden by default here (these tests are about everything but that window), or an ordinary window kept out of the way.
+const HIDDEN = ['--headless=new'];
+const OUT_OF_THE_WAY = ['--window-position=-4000,-4000', '--window-size=400,300'];
+
+async function boot({ link = 'session', pace = FAST, sessions = false, driven = HIDDEN, site: siteState = {} } = {}) {
   const site = await startFakeDeepSeek();
+  Object.assign(site.state, siteState);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ula-ds-'));
   const bus = new EventEmitter();
   const logs = [];
   const config = createConfig({ dataDir: dir });
-  const provider = createDeepSeekProvider({ dataDir: dir, config, bus, base: site.base, pace: pace === 'default' ? undefined : pace, log: (l) => logs.push(l), plainChromeArgs: ['--headless=new'] });
+  const provider = createDeepSeekProvider({ dataDir: dir, config, bus, base: site.base, pace: pace === 'default' ? undefined : pace, log: (l) => logs.push(l), plainChromeArgs: ['--headless=new'], drivenChromeArgs: driven, sessions });
   const srv = createServer({ config, registry: createRegistry({ providers: [provider], bus }), port: 0 });
   const { port } = await srv.start();
   const key = config.createApiKey('t').key;
@@ -100,6 +106,63 @@ test('linking through Chrome reads the session token and the cookies (HttpOnly o
     assert.equal((await t.provider.status()).accountLabel, 'o***@example.com');
     assert.ok(!fs.readFileSync(path.join(t.dir, 'deepseek_session.json'), 'utf8').includes('owner@example.com'));
     assert.ok(!t.logs.join('\n').includes('owner@example.com'));
+  } finally { await t.provider.stop(); await t.close(); }
+});
+
+test('the real site refuses a hidden Chrome, so the check that reads the sign-in runs in an ordinary window, and the session it keeps has the WAF token', { skip: skipChrome, timeout: 90000 }, async () => {
+  const t = await boot({ link: 'none', driven: OUT_OF_THE_WAY, site: { blockHeadless: true } });
+  try {
+    assert.equal((await t.provider.startLink({ consentAcknowledged: true })).ok, true);
+    const done = await t.provider.finishLink({});
+    assert.deepEqual({ ok: done.ok, linked: done.linked }, { ok: true, linked: true }, JSON.stringify(done));
+    // (the sign-in Chrome of these tests is hidden by the test's own choice and loads the page first; the check is the last load)
+    assert.equal(t.site.state.pageLoads.at(-1).hidden, false, 'the check was an ordinary window, not a hidden Chrome');
+    const saved = JSON.parse(fs.readFileSync(path.join(t.dir, 'deepseek_session.json'), 'utf8'));
+    assert.ok(saved.cookies.some((c) => c.name === 'aws-waf-token'), 'the WAF token the site hands an ordinary window is kept: API calls need it');
+  } finally { await t.provider.stop(); await t.close(); }
+});
+
+test('the WAF token is waited for: the site issues it a moment after the page loaded, and the session keeps it', { skip: skipChrome, timeout: 90000 }, async () => {
+  const t = await boot({ link: 'none', driven: OUT_OF_THE_WAY, site: { wafDelayMs: 1500 } });
+  try {
+    assert.equal((await t.provider.startLink({ consentAcknowledged: true })).ok, true);
+    assert.equal((await t.provider.finishLink({})).linked, true);
+    const saved = JSON.parse(fs.readFileSync(path.join(t.dir, 'deepseek_session.json'), 'utf8'));
+    assert.ok(saved.cookies.some((c) => c.name === 'aws-waf-token' && c.value === 'waf-late'), 'the late cookie was read');
+  } finally { await t.provider.stop(); await t.close(); }
+});
+
+test('when the site blocks the Chrome that checks the sign-in, the person is told that, not that the sign-in page is showing; the link stays open', { skip: skipChrome, timeout: 90000 }, async () => {
+  const t = await boot({ link: 'none', driven: HIDDEN, site: { blockHeadless: true } });
+  try {
+    assert.equal((await t.provider.startLink({ consentAcknowledged: true })).ok, true);
+    const done = await t.provider.finishLink({});
+    assert.equal(done.ok, false);
+    assert.equal(done.blocked, true);
+    assert.equal(done.notSignedIn, undefined, 'a block is not "not signed in"');
+    assert.match(done.note, /refused/i);
+    assert.ok(!/sign-in page/i.test(done.note));
+    assert.equal((await t.provider.status()).linking, true, 'Done can be pressed again');
+    assert.ok(t.logs.some((l) => /check saw .*request could not be satisfied/i.test(l)), 'what the check saw is in the log: ' + t.logs.slice(-4).join(' | '));
+    assert.equal(fs.existsSync(path.join(t.dir, 'deepseek_session.json')), false);
+    assert.equal((await t.provider.finishLink({ cancel: true })).cancelled, true);
+  } finally { await t.provider.stop(); await t.close(); }
+});
+
+test('when Chrome does not let the site save data, the person is told that and where to change it, not that the sign-in page is showing', { skip: skipChrome, timeout: 90000 }, async () => {
+  const t = await boot({ link: 'none', driven: HIDDEN, site: { blockStorage: true } });
+  try {
+    assert.equal((await t.provider.startLink({ consentAcknowledged: true })).ok, true);
+    const done = await t.provider.finishLink({});
+    assert.equal(done.ok, false);
+    assert.equal(done.storageBlocked, true);
+    assert.equal(done.notSignedIn, true, 'the page shows the note the way it shows a sign-in that has not finished');
+    assert.match(done.note, /chrome:\/\/settings\/content\/siteData/);
+    assert.match(done.note, /save data/i);
+    assert.ok(!/sign-in page/i.test(done.note));
+    assert.equal((await t.provider.status()).linking, true, 'the link stays open');
+    assert.ok(t.logs.some((l) => /check saw .*localStorage -1 entries/.test(l)), t.logs.slice(-4).join(' | '));
+    assert.equal((await t.provider.finishLink({ cancel: true })).cancelled, true);
   } finally { await t.provider.stop(); await t.close(); }
 });
 
@@ -348,4 +411,96 @@ test('a DeepSeek address that answers with a redirect is an error: the prompt an
     await new Promise((r) => redirector.close(r)); await new Promise((r) => other.close(r));
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('every DeepSeek model in /v1/models says a working context size, and /v1/models/{id} says the same', async () => {
+  const t = await boot();
+  try {
+    const auth = { authorization: `Bearer ${t.key}` };
+    const list = await (await fetch(`${t.base}/v1/models`, { headers: auth })).json();
+    assert.ok(list.data.length >= 3);
+    assert.ok(list.data.every((m) => m.context_length === 128000), JSON.stringify(list.data.map((m) => m.context_length)));
+    const one = await (await fetch(`${t.base}/v1/models/deepseek-chat`, { headers: auth })).json();
+    assert.equal(one.context_length, 128000);
+  } finally { await t.close(); }
+});
+
+// ---- the network, and a site that changed (the stand-in closes connections on request) --------------------------------------------------------------------
+
+const hello = { model: 'deepseek-chat', messages: [{ role: 'user', content: 'hello' }] };
+
+test('a network blip before the message is sent is tried once more, and the account is spent once', async () => {
+  const t = await boot();
+  try {
+    t.site.state.drop = { '/api/v0/chat_session/create': 1 };
+    const res = await t.chat(hello);
+    assert.equal(res.status, 200, await res.clone().text());
+    assert.equal(t.site.state.requests['/api/v0/chat_session/create'], 2, 'the chat was asked for twice');
+    assert.equal(t.site.state.completions.length, 1, 'one message reached DeepSeek');
+    assert.equal(t.provider.governor.getStats().todayCalls, 1, 'one call counted');
+  } finally { await t.close(); }
+});
+
+test('a connection that stays down is said in words, tried twice and no more, is not a refusal, and costs the account nothing', async () => {
+  const t = await boot();
+  try {
+    t.site.state.drop = { '/api/v0/chat_session/create': 100 };
+    const res = await t.chat(hello);
+    assert.equal(res.status, 502);
+    const message = (await res.json()).error.message;
+    assert.match(message, /could not reach DeepSeek/i);
+    assert.ok(!/fetch failed/i.test(message), 'not the bare words of the network library: ' + message);
+    assert.equal(t.site.state.requests['/api/v0/chat_session/create'], 2, 'twice, not more');
+    assert.equal(t.site.state.completions.length, 0);
+    assert.equal(t.provider.governor.getStats().todayCalls, 0, 'nothing was sent, so nothing is counted');
+    assert.equal(t.provider.governor.getStats().isCooldown, false, 'a bad connection is not a refusal: no pause');
+    t.site.state.drop = {};
+    const again = await t.chat(hello);
+    assert.equal(again.status, 200, 'as soon as the network is back the next request goes through');
+    assert.equal((await t.provider.status()).linked, true);
+  } finally { await t.close(); }
+});
+
+test('an answer that breaks off in the middle is an error in words, never a half answer; the chat is removed and the message is counted', async () => {
+  const t = await boot();
+  try {
+    t.site.state.reply = () => 'A long enough answer that it is sent in several pieces by the stand-in.';
+    t.site.state.dropMidStream = 3;
+    const res = await t.chat(hello);
+    assert.equal(res.status, 502, await res.clone().text());
+    const message = (await res.json()).error.message;
+    assert.match(message, /connection to DeepSeek dropped while it was answering/i);
+    assert.ok(!/terminated|fetch failed/i.test(message), message);
+    assert.equal(t.provider.governor.getStats().todayCalls, 1, 'the message was sent, so the account was spent');
+    for (let i = 0; i < 50 && !t.site.state.deleted.length; i += 1) await new Promise((r) => setTimeout(r, 20));
+    assert.deepEqual(t.site.state.deleted, ['standin-1'], 'the chat that was left is removed');
+  } finally { await t.close(); }
+});
+
+test('a proof-of-work of another kind is named and not worked on, and an unsolvable one is not blamed on DeepSeek', async () => {
+  const t = await boot();
+  try {
+    t.site.state.algorithm = 'DeepSeekHashV2';
+    const started = Date.now();
+    const res = await t.chat(hello);
+    assert.equal(res.status, 502);
+    const message = (await res.json()).error.message;
+    assert.match(message, /changed its proof-of-work/i);
+    assert.match(message, /DeepSeekHashV2/);
+    assert.ok(Date.now() - started < 3000, 'no search through the whole difficulty for an algorithm that is not known');
+    assert.equal(t.site.state.completions.length, 0);
+    assert.equal(t.site.state.powFailures, 0, 'the completion was never asked for');
+  } finally { await t.close(); }
+});
+
+test('the end of a real stream is logged once by the names of its events, with none of its words', async () => {
+  const t = await boot();
+  try {
+    t.site.state.reply = () => 'Words of the answer that must never reach the log.';
+    for (let i = 0; i < 2; i += 1) assert.equal((await t.chat(hello)).status, 200);
+    const lines = t.logs.filter((l) => /^deepseek: the stream ended/.test(l));
+    assert.equal(lines.length, 1, 'once per run: ' + t.logs.join(' | '));
+    assert.match(lines[0], /p=response\/fragments\/-1\/content/, lines[0]);
+    assert.ok(!/Words of the answer/.test(t.logs.join('\n')), 'no words of the answer in the log');
+  } finally { await t.close(); }
 });

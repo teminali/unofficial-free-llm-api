@@ -3,7 +3,7 @@
  *
  *  1. Through Chrome (the supported way). startLink() opens an ordinary Chrome on a profile folder of this program's (never the person's everyday profile), at
  *     chat.deepseek.com; the person signs in there themselves (password, phone code or Google: the page decides, this program sees none of it) and presses
- *     Done. finishLink() quits that Chrome, starts a hidden one on the same profile, reads the web app's own session token from localStorage (userToken.value)
+ *     Done. finishLink() quits that Chrome, starts another on the same profile (an ordinary window for a few seconds: the site refuses a hidden one), reads the web app's own session token from localStorage (userToken.value)
  *     and the site's cookies, saves them, and closes it. Two Chromes because Google refuses a sign-in from a browser that has a debugging port.
  *  2. A pasted token (linkToken), for a machine with no Chrome.
  *
@@ -25,8 +25,14 @@ const SESSION_FILE = 'deepseek_session.json';
 const PROFILE_DIR_NAME = 'deepseek-chrome';
 const LOGIN_TTL_MS = 15 * 60 * 1000;
 const TOKEN_WAIT_MS = 10000;
+const WAF_WAIT_MS = 8000;
 const BACKGROUND_FLAGS = ['--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows'];
-const VISIBLE = process.env.ULA_DEEPSEEK_VISIBLE === '1';
+// The Chrome that reads the sign-in is an ordinary window for a few seconds. The real site answers a hidden (headless) Chrome with a "request blocked" page and hands
+// it no WAF token, and API calls need that token (measured 2026-10-22). ULA_DEEPSEEK_HIDDEN=1 brings the hidden one back.
+const HIDDEN = process.env.ULA_DEEPSEEK_HIDDEN === '1';
+const CHECKING = 'Checking your sign-in (a Chrome window opens for a moment)...';
+const BLOCK_PAGE = /request could not be satisfied|request blocked|access denied/i;
+const WAF_COOKIE = 'aws-waf-token';
 
 /** The models of a linked account: the web chat has two modes, offered as three ids (see the README). */
 const MODELS = [
@@ -49,6 +55,16 @@ function readToken() {
       if (typeof raw === 'string' && raw.length > 20 && !raw.startsWith('{')) return { token: raw, expire: null };
     }
     return null;
+  } catch (_) { return null; }
+}
+
+/** Runs inside the page: what the check Chrome is looking at, for the log and for telling a block from a sign-in page. No token, no cookie values. */
+function pageFacts() {
+  try {
+    const text = ((document.body && document.body.innerText) || '').replace(/\s+/g, ' ').trim().slice(0, 160);
+    let keys = -1;
+    try { keys = Object.keys(localStorage).length; } catch (_) { /* storage not readable here */ }
+    return { href: location.origin + location.pathname, title: String(document.title || '').slice(0, 80), text, keys };
   } catch (_) { return null; }
 }
 
@@ -184,26 +200,54 @@ function createDeepSeekAccount({ dataDir, base = DEFAULT_BASE, log = () => {}, g
     }
     if (w.checking) return { ok: true, checking: true };
     w.checking = true;
-    note = 'Checking your sign-in...';
+    note = CHECKING;
     let browser = null;
     try {
       await closeSignIn();
-      browser = await launchChrome({ executablePath: w.exe, userDataDir: profileDir(), args: [...(VISIBLE ? [] : ['--headless=new']), ...BACKGROUND_FLAGS, ...drivenChromeArgs], log });
+      browser = await launchChrome({ executablePath: w.exe, userDataDir: profileDir(), args: [...(HIDDEN ? ['--headless=new'] : []), ...BACKGROUND_FLAGS, ...drivenChromeArgs], log });
       const page = await browser.newPage();
       await page.goto(`${base}/`).catch(() => {});
       let auth = null;
+      let seen = null;
       for (const until = Date.now() + TOKEN_WAIT_MS; !auth && Date.now() < until;) {
         auth = await page.evaluate(readToken).catch(() => null);
-        if (!auth) await sleep(400);
+        if (auth) break;
+        seen = (await page.evaluate(pageFacts).catch(() => null)) || seen;
+        if (seen && BLOCK_PAGE.test(`${seen.title} ${seen.text}`)) break; // a block page does not change by waiting
+        await sleep(400);
       }
-      const cookies = auth ? await page.cookies([`${base}/`]).catch(() => []) : [];
+      let cookies = [];
+      if (auth) {
+        // The site issues the WAF token a moment after the page loaded; a session without it is refused by the API.
+        for (const until = Date.now() + WAF_WAIT_MS; ;) {
+          cookies = await page.cookies([`${base}/`]).catch(() => []);
+          if (cookies.some((c) => c.name === WAF_COOKIE) || Date.now() >= until) break;
+          await sleep(400);
+        }
+        if (!cookies.some((c) => c.name === WAF_COOKIE)) log('deepseek: no WAF token cookie arrived within the wait; the link is kept without it');
+      } else {
+        const names = (await page.cookies([`${base}/`]).catch(() => [])).map((c) => c.name).join(',');
+        const blockedNow = Boolean(seen) && BLOCK_PAGE.test(`${seen.title} ${seen.text}`);
+        // What the check saw, without any value: the address, the title, how many localStorage entries, which cookies. The page text only when it is a block page.
+        log(`deepseek: check saw ${seen ? `${seen.href} "${seen.title}" (localStorage ${seen.keys} entries; cookies: ${names || 'none'})${blockedNow ? ` text: ${seen.text}` : ''}` : 'no page at all'}`);
+      }
       await browser.close().catch(() => {});
       browser = null;
+      if (!auth && seen && BLOCK_PAGE.test(`${seen.title} ${seen.text}`)) {
+        note = 'DeepSeek refused the Chrome that checks your sign-in (it answered "request blocked"). That is not a problem with your login: press Done again in a minute. If it keeps happening, paste the session token instead (Advanced).';
+        return { ok: false, blocked: true, note };
+      }
       if (!auth) {
         // Not signed in (Done pressed too early, or the sign-in did not take): the plain Chrome comes back so the person can go on.
         log('deepseek: Done was pressed but no session token was found in the profile');
         const reopened = await openSignIn(w.exe);
         if (!reopened.ok) { await settle(); return reopened; }
+        // The page's storage cannot even be read: Chrome is not letting this site save data on the computer (a setting, an extension), so no sign-in can stick.
+        // Said as that, with where to change it: "the sign-in page is showing" sent a person round in circles (a real blocker, 2026-10-22).
+        if (seen && seen.keys === -1) {
+          note = 'Chrome is not letting chat.deepseek.com save data on this computer, so a sign-in cannot stay. In the Chrome window, open a new tab, go to chrome://settings/content/siteData and allow sites to save data (or remove chat.deepseek.com from "Not allowed to save data"), check that no extension blocks cookies, then sign in again and press Done.';
+          return { ok: false, notSignedIn: true, storageBlocked: true, note };
+        }
         note = 'DeepSeek still shows its sign-in page. Finish signing in in the Chrome window, then press Done again.';
         return { ok: false, notSignedIn: true, note };
       }
@@ -228,7 +272,7 @@ function createDeepSeekAccount({ dataDir, base = DEFAULT_BASE, log = () => {}, g
     } finally {
       if (browser) await browser.close().catch(() => {});
       w.checking = false;
-      if (waiting === w && note === 'Checking your sign-in...') note = null;
+      if (waiting === w && note === CHECKING) note = null;
     }
   }
 

@@ -13,7 +13,8 @@
  *    holds nothing but the session's id; sessions live in memory, expire, and end at logout). A request that carries the cookie and is not a plain read must come
  *    from this server's own origin (Origin and Sec-Fetch-Site are checked), so another site cannot act with it.
  *  - With --no-key there is no credential to prove who is calling, so a browser's cross-site request is refused by its origin and the body must be JSON.
- *  - API keys are stored as hashes and shown once; the token and the keys are compared in constant time.
+ *  - A call is checked against the key's hash, and the token and the keys are compared in constant time. The file also keeps each key (for keys made after 0.1.0) so the
+ *    interface can show it again, behind the admin sign-in only: it never appears in a list, in the state, or in a log.
  *  - Bodies are capped, and nothing but metadata (model, status, time, sizes, the key's name) is ever logged or kept: never a prompt or an answer.
  */
 'use strict';
@@ -24,6 +25,8 @@ const path = require('path');
 const crypto = require('crypto');
 const { safeEqual, sha256 } = require('./config');
 const { sendJson, sendError, readBody, finishUpload } = require('./http_util');
+const A = require('./adapters');
+const B = require('./bridge');
 
 const MAX_BODY_BYTES = 16 * 1024 * 1024;
 const UPLOAD_DRAIN_MS = 3000;
@@ -31,6 +34,8 @@ const COOKIE_PREFIX = 'ula_admin';
 const SESSION_MS = 30 * 24 * 60 * 60 * 1000;
 const REQUEST_LOG_KEEP = 100;
 const NOTICE_KEEP = 50;
+// The API routes: the engine's own, and the two other APIs that are translated to it (src/adapters.js).
+const ROUTES = { '/v1/chat/completions': 'chat', '/v1/messages': 'messages', '/v1/messages/count_tokens': 'count_tokens', '/v1/responses': 'responses' };
 
 const TYPES = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml',
@@ -59,10 +64,10 @@ function isLoopback(host) {
 }
 
 /**
- * createServer({ config, registry, version, host, port, webDir, requireKey, cors, log })
+ * createServer({ config, registry, version, host, port, webDir, requireKey, cors, log, logBuffer })
  * `registry` is src/providers/index.js: list(), get(id), resolveModel(name), models().
  */
-function createServer({ config, registry, version = '0.0.0', host = '127.0.0.1', port = 8420, webDir = path.join(__dirname, '..', 'web'), requireKey = true, cors = [], log = () => {} }) {
+function createServer({ config, registry, version = '0.0.0', host = '127.0.0.1', port = 8420, webDir = path.join(__dirname, '..', 'web'), requireKey = true, cors = [], log = () => {}, logBuffer = null }) {
   const loopbackOnly = isLoopback(host);
   if (!requireKey && !loopbackOnly) throw new Error('Refusing to serve the API without keys on an address other than loopback.');
   if (!requireKey && cors.includes('*')) throw new Error('Refusing to serve the API without keys and to every website (--no-key with --cors "*"): any page could spend the account.');
@@ -70,6 +75,7 @@ function createServer({ config, registry, version = '0.0.0', host = '127.0.0.1',
   let boundPort = port;
   const requests = [];
   const notices = [];
+  const responseStore = A.createResponseStore();
   const sessions = new Map(); // sha256(session id) -> expiry time; in memory, so a restart signs the browser out (the terminal prints a fresh link)
   // Cookies are shared between ports of one host, so each server keeps its own cookie name: two copies do not sign each other out.
   const cookieName = () => `${COOKIE_PREFIX}_${boundPort}`;
@@ -166,40 +172,138 @@ function createServer({ config, registry, version = '0.0.0', host = '127.0.0.1',
 
   // ---- the API --------------------------------------------------------------------------------------------------------------------------------
 
+  // What the chat completions endpoint accepts and ignores (docs/api.md): the ignored ones are named in a response header, never silently dropped.
+  const IGNORED_FIELDS = ['temperature', 'top_p', 'frequency_penalty', 'presence_penalty', 'seed', 'logit_bias', 'logprobs', 'top_logprobs', 'parallel_tool_calls', 'store', 'metadata'];
+  const ROLES = new Set(['system', 'developer', 'user', 'assistant', 'tool', 'function']);
+
+  /** What is wrong with a chat completion request body, as a sentence, or '' when nothing is. */
+  function problemWith(body) {
+    if (!Array.isArray(body.messages) || !body.messages.length) return { code: 'invalid_messages', message: '"messages" must be a non-empty array.' };
+    for (const [i, m] of body.messages.entries()) {
+      if (!m || typeof m !== 'object' || !ROLES.has(m.role)) return { code: 'invalid_messages', message: `messages[${i}].role must be one of system, user, assistant and tool.`, param: `messages[${i}].role` };
+    }
+    if (body.n !== undefined && body.n !== null && Number(body.n) !== 1) return { code: 'unsupported_parameter', message: '"n" must be 1: a web chat gives one answer.', param: 'n' };
+    return null;
+  }
+
+  const MODEL_ID = /^\/v1\/models\/(.+)$/;
+  const modelObject = (m) => ({ id: m.id, object: 'model', created: m.created || 0, owned_by: m.provider, name: m.name, ...(m.thinking ? { reasoning: true } : {}), ...(m.context_length ? { context_length: m.context_length } : {}) });
+
   async function handleApi(req, res, url, who) {
     const extra = who.kind === 'key' ? corsHeaders(req) : {};
+    const requestId = `req_${crypto.randomBytes(10).toString('hex')}`;
+    res.setHeader('X-Request-Id', requestId);
     if (req.method === 'GET' && url.pathname === '/v1/models') {
-      return sendJson(res, 200, {
-        object: 'list',
-        data: registry.models().map((m) => ({ id: m.id, object: 'model', created: m.created || 0, owned_by: m.provider, name: m.name, ...(m.thinking ? { reasoning: true } : {}) }))
-      }, extra);
+      // The answer is what there is now; a provider whose list can go stale (an account's picker) starts reading it again in the background if it is old.
+      for (const p of registry.list()) { if (typeof p.refreshModels === 'function') Promise.resolve(p.refreshModels()).catch(() => {}); }
+      return sendJson(res, 200, { object: 'list', data: registry.models().map(modelObject) }, extra);
     }
-    if (req.method !== 'POST' || url.pathname !== '/v1/chat/completions') return sendError(res, 404, 'not_found', 'Unknown route. This server has /v1/models and /v1/chat/completions.', extra);
+    const one = req.method === 'GET' ? MODEL_ID.exec(url.pathname) : null;
+    if (one) {
+      let wanted = '';
+      try { wanted = decodeURIComponent(one[1]); } catch (_) { wanted = ''; }
+      const m = wanted ? registry.resolveModel(wanted) : null;
+      return m ? sendJson(res, 200, modelObject(m), extra) : sendError(res, 404, 'model_not_found', `No linked model called "${wanted}".`, extra);
+    }
+    const route = ROUTES[url.pathname];
+    if (req.method !== 'POST' || !route) return sendError(res, 404, 'not_found', 'Unknown route. This server has /v1/models, /v1/chat/completions, /v1/messages and /v1/responses.', extra);
+    // Errors are written in the shape of the API the caller used.
+    const fail = (status, code, message, headers = {}, param = null) => (route === 'messages' ? sendJson(res, status, A.anthropicError(status, message), { ...extra, ...headers }) : sendError(res, status, code, message, { ...extra, ...headers }, param));
     if (who.viaCookie && !sameOrigin(req)) return sendError(res, 403, 'forbidden_origin', 'This request did not come from this server\'s own page.');
     if (who.kind === 'open' && !/^application\/json\b/i.test(String(req.headers['content-type'] || ''))) {
-      return sendError(res, 415, 'unsupported_media_type', 'Without keys the body must be sent as "Content-Type: application/json".');
+      return fail(415, 'unsupported_media_type', 'Without keys the body must be sent as "Content-Type: application/json".');
     }
-    const body = await jsonBody(req, res);
-    if (!body) return undefined;
-    if (!Array.isArray(body.messages) || !body.messages.length) return sendError(res, 400, 'invalid_messages', '"messages" must be a non-empty array.', extra);
+    const original = await jsonBody(req, res);
+    if (!original) return undefined;
+
+    // Whatever API the caller used, the engine is given a chat completion request.
+    let body = original;
+    let tag = '';
+    if (route === 'messages' || route === 'count_tokens') {
+      const t = A.anthropicToChat(original);
+      if (t.error) return fail(t.error.status, 'invalid_messages', t.error.message);
+      body = t.chat; tag = t.tag;
+    } else if (route === 'responses') {
+      const t = A.responsesToChat(original, responseStore);
+      if (t.error) return fail(t.error.status, t.error.code, t.error.message);
+      body = t.chat; tag = t.tag;
+    }
+    const problem = problemWith(body);
+    if (problem) return fail(400, problem.code, problem.message, {}, problem.param || null);
+    body = { ...body, messages: body.messages.map((m) => (m.role === 'developer' ? { ...m, role: 'system' } : m)) };
     const wanted = typeof body.model === 'string' ? body.model.trim() : '';
     const entry = registry.resolveModel(wanted);
     if (!entry) {
       const names = registry.models().map((m) => m.id);
-      return sendError(res, 404, 'model_not_found', `No linked model called "${wanted}".${names.length ? ` Available: ${names.join(', ')}.` : ' No account is linked yet: open the web interface and link one.'}`, extra);
+      return fail(404, 'model_not_found', `No linked model called "${wanted}".${names.length ? ` Available: ${names.join(', ')}.` : ' No account is linked yet: open the web interface and link one.'}`);
+    }
+    if (route === 'count_tokens') {
+      const tools = Array.isArray(body.tools) ? body.tools : [];
+      return sendJson(res, 200, { input_tokens: A.estimateTokens(B.buildPrompt(body.messages, tools, {}).length) }, extra);
     }
     const provider = registry.get(entry.provider);
     const state = await provider.status();
-    if (!state.linked) return sendError(res, 409, `${provider.id}_not_linked`, `${provider.name} is not linked. Open ${baseUrl()} and link it on the Accounts page.`, extra);
-    if (state.expired) return sendError(res, 401, `${provider.id}_session_expired`, state.expiredReason || `Your ${provider.name} session has expired. Sign in again on the Accounts page.`, extra);
+    if (!state.linked) return fail(409, `${provider.id}_not_linked`, `${provider.name} is not linked. Open ${baseUrl()} and link it on the Accounts page.`);
+    if (state.expired) return fail(401, `${provider.id}_session_expired`, state.expiredReason || `Your ${provider.name} session has expired. Sign in again on the Accounts page.`);
     for (const [k, v] of Object.entries(extra)) res.setHeader(k, v);
+    const ignored = IGNORED_FIELDS.filter((f) => original[f] !== undefined && original[f] !== null);
+    // A cut through a tool call would be a broken call, so a request with tools is not cut: max_tokens and stop are ignored for it, and said to be.
+    if (Array.isArray(body.tools) && body.tools.length > 0 && body.tool_choice !== 'none') for (const f of ['max_tokens', 'max_completion_tokens', 'stop']) if (body[f] !== undefined && body[f] !== null) ignored.push(f);
+    if (ignored.length) res.setHeader('X-ULA-Ignored', ignored.join(', '));
     const started = Date.now();
-    const result = await provider.engine.chat(res, body, entry);
+    // A caller can name its session: the header, or the `user` field every OpenAI client already has (or what the other APIs have in its place).
+    const sessionTag = String(req.headers['x-ula-session'] || tag || (typeof body.user === 'string' ? body.user : '') || '');
+    const meta = { sessionTag };
+    let result;
+    if (route === 'chat') result = await provider.engine.chat(res, body, entry, meta);
+    else if (route === 'messages') result = await serveMessages({ req, res, original, body, entry, provider, meta, extra });
+    else result = await serveResponses({ req, res, original, body, entry, provider, meta, extra });
     record({
-      at: new Date(started).toISOString(), provider: provider.id, model: entry.id, stream: body.stream === true, tools: Array.isArray(body.tools) ? body.tools.length : 0,
-      status: result.status, code: result.code || null, ms: Date.now() - started, chars: result.chars || 0, by: who.kind === 'key' ? who.name : 'web interface'
+      at: new Date(started).toISOString(), provider: provider.id, model: entry.id, api: route, stream: original.stream === true, tools: Array.isArray(body.tools) ? body.tools.length : 0,
+      status: result.status, code: result.code || null, ms: Date.now() - started, queueMs: result.queueMs || 0, firstMs: result.firstMs || 0, chars: result.chars || 0, by: who.kind === 'key' ? who.name : 'web interface'
     });
     return undefined;
+  }
+
+  /** The queue and first-word times the engine measured, from what an adapter got back. */
+  const timing = (done) => ({ queueMs: (done.result && done.result.queueMs) || 0, firstMs: (done.result && done.result.firstMs) || 0 });
+
+  /** `POST /v1/messages`: the engine answers a chat completion, and what it says is written as an Anthropic message (finished, or as the events of a stream). */
+  async function serveMessages({ req, res, original, body, entry, provider, meta, extra }) {
+    const model = String(original.model || entry.id);
+    const inputTokens = A.estimateTokens(B.buildPrompt(body.messages, body.tools || [], {}).length);
+    const live = original.stream === true ? A.anthropicStream(res, { model, inputTokens }) : null;
+    const done = await A.runEngine({ provider, chatBody: body, entry, meta, clientRes: res, live: live ? { start: live.start, delta: live.delta } : {} });
+    if (done.failure) {
+      if (live && res.headersSent) live.error(done.failure.status, done.failure.message);
+      else sendJson(res, done.failure.status, A.anthropicError(done.failure.status, done.failure.message), { ...extra, ...(done.retryAfter ? { 'Retry-After': String(done.retryAfter) } : {}) });
+      return { ok: false, status: done.status, code: done.failure.code, ...timing(done) };
+    }
+    if (live) live.finish(done.message);
+    else sendJson(res, 200, A.anthropicMessage({ model, message: done.message, inputTokens }), extra);
+    return { ok: true, status: 200, chars: done.message.content.length, ...timing(done) };
+  }
+
+  /** `POST /v1/responses`: the same for OpenAI's Responses API; the conversation can be kept for `previous_response_id`. */
+  async function serveResponses({ req, res, original, body, entry, provider, meta, extra }) {
+    const model = String(original.model || entry.id);
+    const responseId = A.id('resp');
+    const createdAt = Math.floor(Date.now() / 1000);
+    const inputTokens = A.estimateTokens(B.buildPrompt(body.messages, body.tools || [], {}).length);
+    const live = original.stream === true ? A.responsesStream(res, { model, responseId, createdAt }) : null;
+    const done = await A.runEngine({ provider, chatBody: body, entry, meta, clientRes: res, live: live ? { start: live.start, delta: live.delta } : {} });
+    if (done.failure) {
+      if (live && res.headersSent) live.error(done.failure.status, done.failure.message, done.failure.code);
+      else sendError(res, done.failure.status, done.failure.code || 'server_error', done.failure.message, { ...extra, ...(done.retryAfter ? { 'Retry-After': String(done.retryAfter) } : {}) });
+      return { ok: false, status: done.status, code: done.failure.code, ...timing(done) };
+    }
+    if (original.store !== false) {
+      const assistant = { role: 'assistant', content: done.message.content || null, ...(done.message.calls.length ? { tool_calls: done.message.calls.map((c) => ({ id: c.id, type: 'function', function: { name: c.name, arguments: c.arguments } })) } : {}) };
+      responseStore.set(responseId, [...body.messages, assistant], entry.id);
+    }
+    if (live) live.finish(done.message, inputTokens);
+    else sendJson(res, 200, A.responseObject({ responseId, model, message: done.message, createdAt, inputTokens }), extra);
+    return { ok: true, status: 200, chars: done.message.content.length, ...timing(done) };
   }
 
   // ---- the admin API --------------------------------------------------------------------------------------------------------------------------
@@ -207,7 +311,9 @@ function createServer({ config, registry, version = '0.0.0', host = '127.0.0.1',
   async function publicState() {
     const providers = [];
     for (const p of registry.list()) providers.push({ id: p.id, name: p.name, capabilities: p.capabilities, ...(await p.status()) });
-    return { version, baseUrl: baseUrl(), providers, keys: config.listApiKeys(), requests, notices, requireKey, models: registry.models() };
+    const sessions = [];
+    for (const p of registry.list()) for (const s of (p.engine && p.engine.sessionList ? p.engine.sessionList() : [])) sessions.push({ ...s, provider: p.id });
+    return { version, baseUrl: baseUrl(), providers, keys: config.listApiKeys(), requests, notices, requireKey, models: registry.models(), sessions };
   }
 
   async function handleAdmin(req, res, url) {
@@ -216,6 +322,7 @@ function createServer({ config, registry, version = '0.0.0', host = '127.0.0.1',
     const send = (payload = { ok: true }) => sendJson(res, 200, payload);
 
     if (req.method === 'GET' && route === '/state') return send(await publicState());
+    if (req.method === 'GET' && route === '/log') return send({ lines: logBuffer ? logBuffer.list(url.searchParams.get('lines')) : [] });
     if (req.method === 'POST' && route === '/logout') {
       const key = sessionFor(req);
       if (key) sessions.delete(key);
@@ -228,10 +335,21 @@ function createServer({ config, registry, version = '0.0.0', host = '127.0.0.1',
       if (!body) return undefined;
       return send(config.createApiKey(body.name));
     }
+    const revealMatch = /^\/keys\/([a-f0-9]+)\/reveal$/.exec(route);
+    if (req.method === 'POST' && revealMatch) {
+      if (!config.listApiKeys().some((k) => k.id === revealMatch[1])) return sendError(res, 404, 'not_found', 'No such key.');
+      const secret = config.revealApiKey(revealMatch[1]);
+      return secret ? send({ key: secret }) : sendError(res, 409, 'not_revealable', 'This key was made before keys could be shown again, so only its start and end are known. Make a new one.');
+    }
+    const sessionMatch = /^\/sessions\/([a-z0-9-]+)\/([A-Za-z0-9]+)$/.exec(route);
+    if (req.method === 'DELETE' && sessionMatch) {
+      const owner = registry.get(sessionMatch[1]);
+      return owner && owner.engine && owner.engine.endSession && owner.engine.endSession(sessionMatch[2]) ? send() : sendError(res, 404, 'not_found', 'No such session, or it is answering right now.');
+    }
     const keyMatch = /^\/keys\/([a-f0-9]+)$/.exec(route);
     if (req.method === 'DELETE' && keyMatch) return config.revokeApiKey(keyMatch[1]) ? send() : sendError(res, 404, 'not_found', 'No such key.');
 
-    const providerMatch = /^\/providers\/([a-z0-9-]+)\/(link|finish|unlink|token|settings|reset)$/.exec(route);
+    const providerMatch = /^\/providers\/([a-z0-9-]+)\/(link|finish|unlink|token|settings|reset|refresh-models)$/.exec(route);
     if (providerMatch) {
       const provider = registry.get(providerMatch[1]);
       if (!provider) return sendError(res, 404, 'not_found', 'No such provider.');
@@ -241,6 +359,11 @@ function createServer({ config, registry, version = '0.0.0', host = '127.0.0.1',
       if (!body) return undefined;
       if (action === 'link') return send(await provider.startLink({ consentAcknowledged: body.consentAcknowledged === true }));
       if (action === 'finish') return send(await provider.finishLink({ cancel: body.cancel === true }));
+      if (action === 'refresh-models') {
+        if (typeof provider.refreshModels !== 'function') return sendError(res, 400, 'not_supported', `${provider.name} has a fixed list of models.`);
+        const refreshed = await provider.refreshModels({ force: true });
+        return send({ ok: true, refreshed, models: provider.models() });
+      }
       if (action === 'unlink') return send(await provider.unlink());
       if (action === 'reset') { provider.resetUsage(); return send(); }
       if (action === 'settings') return send(await provider.setSettings(body));

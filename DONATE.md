@@ -1,6 +1,6 @@
 # Support this work
 
-`unofficial-llm-api` is free and open source, and stays that way. If it saved you time or
+`unofficial-free-llm-api` is free and open source, and stays that way. If it saved you time or
 money, a coffee's worth of crypto is a genuinely good way to say so.
 
 | Chain | Address | Note |

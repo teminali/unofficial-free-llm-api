@@ -76,11 +76,20 @@ test('the API needs a key: none, a wrong one and a revoked one are refused', asy
   } finally { await t.close(); }
 });
 
-test('keys are stored as hashes, never as the key', async () => {
+test('a key is kept in config.json (so it can be shown again) next to its hash, the file is owner-only, and the key is nowhere else in the data folder', async () => {
   const t = await boot();
   try {
-    assert.ok(!fs.readFileSync(path.join(t.dir, 'config.json'), 'utf8').includes(t.key));
-    assert.equal(fs.statSync(path.join(t.dir, 'config.json')).mode & 0o777, 0o600);
+    const file = path.join(t.dir, 'config.json');
+    const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
+    assert.equal(saved.apiKeys.length, 1);
+    assert.equal(saved.apiKeys[0].secret, t.key, 'the key is kept, so the interface can show it again');
+    assert.ok(saved.apiKeys[0].hash && !saved.apiKeys[0].hash.includes(t.key), 'and the hash is what a call is checked against');
+    assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+    for (const name of fs.readdirSync(t.dir)) {
+      if (name === 'config.json') continue;
+      const p = path.join(t.dir, name);
+      if (fs.statSync(p).isFile()) assert.ok(!fs.readFileSync(p, 'utf8').includes(t.key), `${name} must not hold the key`);
+    }
   } finally { await t.close(); }
 });
 
@@ -418,6 +427,36 @@ test('a Host header that is not this server\'s own is refused on loopback', asyn
     assert.equal(bad.json().error.code, 'forbidden_host');
     const good = await raw(t, { pathname: '/v1/models', headers: { host: `localhost:${t.port}`, authorization: `Bearer ${t.key}` } });
     assert.equal(good.status, 200);
+  } finally { await t.close(); }
+});
+
+test('a key can be shown again from the interface: only with the sign-in, never from another site, and an older hash-only key says so', async () => {
+  const t = await boot();
+  try {
+    const login = await raw(t, { pathname: `/_/login?token=${encodeURIComponent(t.config.adminToken())}` });
+    const jar = String(login.headers['set-cookie'][0]).split(';')[0];
+    const own = { cookie: jar, origin: `http://127.0.0.1:${t.port}` };
+    const id = t.config.listApiKeys()[0].id;
+    assert.equal((await raw(t, { method: 'POST', pathname: `/_/keys/${id}/reveal`, headers: { authorization: `Bearer ${t.key}`, origin: own.origin } })).status, 401, 'an API key cannot read keys');
+    assert.equal((await raw(t, { method: 'POST', pathname: `/_/keys/${id}/reveal`, headers: { cookie: jar, origin: 'http://evil.example' } })).status, 403, 'another site cannot');
+    assert.equal((await raw(t, { pathname: `/_/keys/${id}/reveal`, headers: own })).status === 200, false, 'a plain GET does not hand it over');
+    const shown = await raw(t, { method: 'POST', pathname: `/_/keys/${id}/reveal`, headers: own });
+    assert.equal(shown.status, 200);
+    assert.equal(shown.json().key, t.key);
+    assert.match(String(shown.headers['cache-control']), /no-store/);
+    assert.equal((await raw(t, { method: 'POST', pathname: '/_/keys/ffffffffffff/reveal', headers: own })).status, 404);
+    // a key from version 0.1.0 (hash only)
+    const file = path.join(t.dir, 'config.json');
+    const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+    data.apiKeys.push({ id: 'aaaaaaaaaaaa', name: 'old', hash: 'x'.repeat(64), hint: 'sk-ula-old...old', createdAt: new Date().toISOString(), lastUsedAt: null });
+    fs.writeFileSync(file, JSON.stringify(data));
+    const later = new Date(Date.now() + 5000);
+    fs.utimesSync(file, later, later);
+    const old = await raw(t, { method: 'POST', pathname: '/_/keys/aaaaaaaaaaaa/reveal', headers: own });
+    assert.equal(old.status, 409);
+    assert.match(old.json().error.message, /make a new one/i);
+    const state = await raw(t, { pathname: '/_/state', headers: { cookie: jar } });
+    assert.ok(!state.text.includes(t.key), 'the state still never carries a key');
   } finally { await t.close(); }
 });
 

@@ -3,7 +3,7 @@
 
 const [major] = process.versions.node.split('.').map(Number);
 if (major < 22) {
-  process.stderr.write(`unofficial-llm-api needs Node.js 22 or newer (this is ${process.versions.node}).\n`);
+  process.stderr.write(`unofficial-free-llm-api needs Node.js 22 or newer (this is ${process.versions.node}).\n`);
   process.exit(1);
 }
 

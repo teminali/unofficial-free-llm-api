@@ -37,7 +37,7 @@ test('the async solver gives the same answer and lets the event loop run meanwhi
 test('a challenge with no answer below the difficulty is refused, not looped on', async () => {
   const c = { algorithm: 'DeepSeekHashV1', challenge: 'f'.repeat(64), salt: 'x', expire_at: 1, difficulty: 200, signature: 's', target_path: '/p' };
   assert.equal(solve(c), null);
-  await assert.rejects(powHeader(c), /refused the proof-of-work/);
+  await assert.rejects(powHeader(c), /could not solve DeepSeek's proof-of-work/);
 });
 
 test('the header is the base64 of the answer with the challenge\'s own fields', async () => {

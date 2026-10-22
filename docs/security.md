@@ -11,12 +11,14 @@ This process holds logins to personal accounts, so it is built around one questi
 | A website makes the web interface act for you (CSRF) | Opening the login link trades the admin token for a random session: an HttpOnly, `SameSite=Strict` cookie that holds only the session's id (kept in memory, 30 days at most, ended by logout, so a restart signs the browser out). Any request that carries it and changes something must come from the server's own origin (`Origin` and `Sec-Fetch-Site` are checked). The cookie's name includes the port, so two copies on one machine do not sign each other out |
 | DNS rebinding (a hostile name that points at 127.0.0.1) | On loopback the `Host` header must be `127.0.0.1`, `localhost` or `[::1]` with the server's port |
 | Someone on your network | Listens on loopback by default. `--host 0.0.0.0` is allowed, warns, and still needs a key for `/v1` and the admin token for the interface; `--no-key` is refused off loopback |
-| A leaked key | Keys are stored as SHA-256 hashes, shown once, revocable, compared in constant time. A key reaches `/v1` only; the admin routes need the admin token |
+| A leaked key | A call is checked against the key's SHA-256 hash in constant time. Keys made after 0.1.0 are also kept in `config.json` (mode 0600, in a 0700 folder) so the API page and `key show` can show them again: the file already holds the admin token, which can make keys, so whoever can read it could mint one anyway. Keys are revocable. A key reaches `/v1` only; the admin routes need the admin token, and the key list and the state never carry a key (only the admin-signed `POST /_/keys/:id/reveal` and `key show` do). Keys made by 0.1.0 are hash-only and cannot be shown: make a new one |
 | Script injection through a model's answer | The interface builds every element with DOM calls; there is no `innerHTML`. Only `http(s)` links are made. A strict CSP (`script-src 'self'`, no inline script) is sent with the page |
 | Secrets at rest | `config.json`, session files, settings and usage files are mode 0600 in a 0700 folder, written through a temporary file and renamed. A `config.json` that is not valid JSON stops the server with a message; it is never replaced by an empty one |
 | A client that leaves | A request whose client goes away while it waits for its turn is dropped before anything is sent upstream. One that leaves after the message went out still counts toward the daily and per-minute limits, because the account was spent |
 | A redirect from the provider's address | Requests to DeepSeek never follow redirects, so the prompt and the login are not sent on to another address |
-| Secrets in logs | Only metadata is logged or kept: model, status, time, sizes, the key's name. Never a prompt, an answer, a token or a cookie |
+| Secrets in logs | Only metadata is logged or kept: model, status, time, sizes, the key's name. Never a prompt, an answer, a token or a cookie. `unofficial-free-llm-api log` (and `GET /_/log`, which needs the sign-in or the admin token) shows the last 300 lines the providers logged, held in memory and never written to disk, with keys and token-like strings scrubbed once more. The Gemini lane logs the shape of a page (tag names, classes, text lengths) and the DeepSeek lane the names of a stream's events, never the words |
+| What sessions remember | To continue a provider chat the program keeps, in memory, one short hash for each message and the provider's chat id: never the words. The chat ids that are open are also written to `sessions-<provider>.json` (mode 0600), so a chat left by a killed program is removed the next time; that file holds ids, nothing else |
+| What `previous_response_id` remembers | `/v1/responses` keeps the messages of the last 64 responses **in memory** for 30 minutes (so a caller can send only the new input). They are never written anywhere, and `store: false` keeps nothing |
 | A huge request | Bodies over 16 MB are answered `413` after the upload is drained |
 | Traffic that would hurt the account | The governor (see the README) paces, caps, queues and pauses; the first provider refusal stops all calls until the pause ends |
 
@@ -31,8 +33,8 @@ This process holds logins to personal accounts, so it is built around one questi
 
 ## The admin token
 
-`config.json` holds a random admin token, which signs in to the web interface (not the API). `unofficial-llm-api` prints a link that signs the browser in (it
-sets the session cookie, then redirects without the token in the address). `unofficial-llm-api login-url` prints the link again.
+`config.json` holds a random admin token, which signs in to the web interface (not the API). `unofficial-free-llm-api` prints a link that signs the browser in (it
+sets the session cookie, then redirects without the token in the address). `unofficial-free-llm-api login-url` prints the link again.
 
 The link is a long-lived credential for the interface, and it lands in places a password would not: your browser's history (and the paste box on the
 sign-in card), and the command line of the program that opens the browser. Treat it like a password and do not share a screenshot of the terminal. To rotate it,

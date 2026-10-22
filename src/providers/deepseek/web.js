@@ -2,8 +2,10 @@
  * The DeepSeek web completion client.
  *
  * The web app's own endpoints are called with the session token saved by link.js: a proof-of-work challenge solved the way the web app solves it (pow.js),
- * then the completion stream. One fresh chat session per call, because the engine rebuilds the whole conversation itself on every request; the session is
- * deleted as soon as the answer is in, so the person's web history stays clean.
+ * then the completion stream. By default one fresh chat session per call, deleted as soon as the answer is in, so the person's web history stays clean. A call
+ * made with `keep` leaves the chat open and hands back a `remote` ({ id, lastId }: the chat and the message the next one continues from), and a call made with
+ * that `remote` continues the same chat: that is what the engine does for a conversation it has seen before (src/sessions.js), the way the web app continues a
+ * chat. The engine asks for a chat to be removed with `closeSession`; only chats this module opened are ever passed to it.
  */
 'use strict';
 
@@ -73,8 +75,52 @@ function plainError(data) {
   return classified.message;
 }
 
-function createDeepSeekWeb({ dataDir, base = DEFAULT_BASE, log = () => {}, governor = null, onAuthExpired = () => {} }) {
+// A failed network call says "fetch failed" and keeps the real reason in `cause`. These are the reasons that mean the connection, not DeepSeek, failed.
+const NETWORK_REASONS = {
+  ENOTFOUND: 'its address could not be looked up', EAI_AGAIN: 'its address could not be looked up', ECONNREFUSED: 'the connection was refused',
+  ECONNRESET: 'the connection was reset', ETIMEDOUT: 'the connection timed out', UND_ERR_CONNECT_TIMEOUT: 'the connection timed out',
+  UND_ERR_HEADERS_TIMEOUT: 'it did not answer in time', UND_ERR_BODY_TIMEOUT: 'it stopped answering', UND_ERR_SOCKET: 'the connection was closed',
+  EPIPE: 'the connection was closed', ENETUNREACH: 'there is no network', EHOSTUNREACH: 'it could not be reached', ENETDOWN: 'there is no network'
+};
+function networkCode(err) {
+  const cause = err && err.cause;
+  return String((cause && (cause.code || (Array.isArray(cause.errors) && cause.errors[0] && cause.errors[0].code))) || (err && err.code) || '');
+}
+/** True when the connection failed (not DeepSeek answering badly, not a caller who left). */
+function isNetworkError(err) {
+  if (!err || err.classified || err.name === 'AbortError') return false;
+  if (NETWORK_REASONS[networkCode(err)]) return true;
+  return err.name === 'TypeError' && /fetch failed|terminated|other side closed/i.test(String(err.message || ''));
+}
+function networkReason(err) { return NETWORK_REASONS[networkCode(err)] || 'the connection failed'; }
+
+/** A pause that a caller who leaves cuts short. */
+function pause(ms, signal) {
+  return new Promise((resolve) => {
+    if (signal && signal.aborted) return resolve();
+    const done = () => { clearTimeout(timer); if (signal) signal.removeEventListener('abort', done); resolve(); };
+    const timer = setTimeout(done, ms);
+    if (signal) signal.addEventListener('abort', done, { once: true });
+  });
+}
+
+/** One event of the stream by its names, never its words: what kind it is, which part it patches, and a state value such as FINISHED. */
+function describeEvent(ev) {
+  if (!ev || typeof ev !== 'object') return typeof ev;
+  const state = (p, v) => (/status/i.test(String(p || '')) && typeof v === 'string' ? `=${v.slice(0, 24)}` : '');
+  const parts = [];
+  if (ev.type) parts.push(`type=${String(ev.type).slice(0, 24)}`);
+  if (ev.p) parts.push(`p=${String(ev.p).slice(0, 40)}${state(ev.p, ev.v)}`);
+  if (ev.o) parts.push(`o=${String(ev.o).slice(0, 12)}`);
+  if (Array.isArray(ev.v)) parts.push('v:[' + ev.v.slice(0, 4).map((x) => (x && typeof x === 'object' ? String(x.p || x.type || 'object').slice(0, 30) + state(x.p, x.v) : typeof x)).join(',') + ']');
+  else if (ev.v && typeof ev.v === 'object') parts.push('v:{' + Object.keys(ev.v).slice(0, 6).join(',') + '}');
+  if (!parts.length) parts.push('keys:' + Object.keys(ev).slice(0, 6).join(','));
+  return parts.join(' ');
+}
+
+function createDeepSeekWeb({ dataDir, base = DEFAULT_BASE, log = () => {}, governor = null, onAuthExpired = () => {}, networkRetryMs = 800, closeRetryMs = 30000 }) {
   const BASE = base;
+  let streamEndLogged = false; // how a real stream ends is written to the log once per run, by names only (see completion)
   const sessionPath = () => path.join(dataDir, 'deepseek_session.json');
 
   function token() {
@@ -155,30 +201,53 @@ function createDeepSeekWeb({ dataDir, base = DEFAULT_BASE, log = () => {}, gover
   }
 
   /**
-   * Removes a chat session the bridge opened. Fire and forget: the answer has already been read, and a
-   * cleanup failure must never fail the turn. Only ids this module created are ever passed here.
+   * Removes a chat session the bridge opened. Never rejects, and a cleanup failure must never fail the turn. Only ids this module created are ever passed here.
+   * Resolves 'done' (removed, or DeepSeek's answer says there is nothing to wait for: the chat is gone, the login is refused) or 'later' (the network failed or DeepSeek
+   * had an error of its own: the chat is still there and removing it is worth asking again).
    */
-  function discardSession(id) {
-    if (!id) return;
+  async function deleteChat(id) {
+    if (!id || !token()) return 'done';
     let signal;
     try { signal = AbortSignal.timeout(15000); } catch (_) { signal = undefined; }
-    fetch(`${BASE}/api/v0/chat_session/delete`, {
-      method: 'POST',
-      headers: headers(),
-      body: JSON.stringify({ chat_session_id: id }),
-      signal,
-      redirect: 'error'
-    }).then((res) => {
-      if (!res.ok) log(`deepseek web: session cleanup returned ${res.status}`);
-    }).catch((err) => {
+    try {
+      const res = await fetch(`${BASE}/api/v0/chat_session/delete`, {
+        method: 'POST',
+        headers: headers(),
+        body: JSON.stringify({ chat_session_id: id }),
+        signal,
+        redirect: 'error'
+      });
+      if (res.ok) return 'done';
+      log(`deepseek web: session cleanup returned ${res.status}`);
+      return res.status >= 500 || res.status === 429 ? 'later' : 'done';
+    } catch (err) {
       log('deepseek web: session cleanup failed: ' + String((err && err.message) || err));
-    });
+      return 'later';
+    }
+  }
+  function discardSession(id) {
+    deleteChat(id);
+  }
+  /**
+   * Removes a chat that was kept for a session (the engine's call: the session ended, expired, or the program is stopping). While the account is resting after a
+   * refusal nothing is sent to it, not even this: the answer says to ask again later. So does a removal that failed because of the network: the chat stays on the
+   * engine's list (and written down), and is removed when it can be.
+   */
+  async function closeSession(remote) {
+    if (!remote || !remote.id) return undefined;
+    const limit = governor ? governor.checkLimit() : { allowed: true };
+    if (!limit.allowed && limit.reason === 'cooldown') return { retryAfterMs: Math.min(15 * 60 * 1000, Math.max(30 * 1000, (limit.retryAfterSec || 60) * 1000)) };
+    return (await deleteChat(remote.id)) === 'later' ? { retryAfterMs: closeRetryMs } : undefined;
   }
 
   async function powHeader(signal) {
     const r = await api('/api/v0/chat/create_pow_challenge', { target_path: '/api/v0/chat/completion' }, signal);
     const challenge = r.data && r.data.data && r.data.data.biz_data && r.data.data.biz_data.challenge;
     if (!challenge) throw new Error('DeepSeek did not send a proof-of-work challenge');
+    // Only the one algorithm this program has is worked on: another one would be searched through its whole difficulty and then fail.
+    if (challenge.algorithm && challenge.algorithm !== 'DeepSeekHashV1') {
+      throw new Error(`DeepSeek has changed its proof-of-work: it now asks for "${String(challenge.algorithm).slice(0, 40)}", which this version of the bridge does not know. The bridge needs an update.`);
+    }
     return solvePow(challenge);
   }
 
@@ -231,12 +300,19 @@ function createDeepSeekWeb({ dataDir, base = DEFAULT_BASE, log = () => {}, gover
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
+    let eventCount = 0;
+    const lastEvents = []; // the last few events by their names, for the one log line about how a stream ends
+    const eventLines = new Set(); // the names on `event:` lines
     const consume = (line) => {
+      if (line.startsWith('event:')) { if (eventLines.size < 8) eventLines.add(line.slice(6).trim().slice(0, 24)); return; }
       if (!line.startsWith('data: ')) return;
       const payload = line.slice(6).trim();
       if (!payload) return;
       let ev;
       try { ev = JSON.parse(payload); } catch (_) { return; }
+      eventCount += 1;
+      lastEvents.push(describeEvent(ev));
+      if (lastEvents.length > 4) lastEvents.shift();
       if (ev.response_message_id) responseMessageId = ev.response_message_id;
       // DeepSeek's own notice that it will not answer (a "hint" event): { type: 'error', content, clear_response, finish_reason: 'rate_limit_reached' }.
       if (ev.type === 'error' && (ev.finish_reason || ev.clear_response)) {
@@ -270,6 +346,10 @@ function createDeepSeekWeb({ dataDir, base = DEFAULT_BASE, log = () => {}, gover
       }
     }
     if (buffer) consume(buffer.replace(/\r$/, ''));
+    if (!streamEndLogged) {
+      streamEndLogged = true;
+      log(`deepseek: the stream ended after ${eventCount} events (names only, no words). The last ones: ${lastEvents.join(' | ') || 'none'}. Event lines: ${[...eventLines].join(', ') || 'none'}`);
+    }
     // The notice replaces the answer: what was streamed before it is withdrawn, and an empty answer behind it is not "finished".
     if (notice && (notice.clear || !answer.trim())) {
       const limited = /rate.?limit|too.?many|busy|quota|limit/i.test(`${notice.reason} ${notice.message}`);
@@ -285,58 +365,85 @@ function createDeepSeekWeb({ dataDir, base = DEFAULT_BASE, log = () => {}, gover
   }
 
   /**
-   * One prompt on a fresh chat session.
-   * On auth expiration or 429/403, notifies and halts immediately without blind retries.
+   * One prompt on a fresh chat session, or, with `remote`, on the chat it names (the message after the last one it holds). With `keep` the chat is left open and
+   * the result carries a `remote` for the next call; without it the chat is deleted once the answer is in.
+   * On auth expiration or 429/403, notifies and halts immediately without blind retries. A chat opened for this call is deleted when the call fails; one that was
+   * continued is left to the engine, which ends its session.
    */
-  async function completeOnce({ prompt, thinking = true, signal = null, onDelta = () => {} }) {
+  async function completeOnce({ prompt, thinking = true, signal = null, onDelta = () => {}, keep = false, remote = null }) {
     if (!token()) {
       // A call that arrives after another one found the login refused (a title and the turn itself, say) gets the same plain answer, not "link an account".
       if (hadLogin()) return { ok: false, error: 'Your DeepSeek session has expired. Sign in again on the Accounts page.', authExpired: true };
       return { ok: false, error: 'Link a DeepSeek account first on the Accounts page.' };
     }
-    let chatSessionId = null;
+    const continued = Boolean(remote && remote.id);
     let sent = false; // the completion request left: from here on the account has been spent, whether or not anyone reads the answer
-    try {
-      chatSessionId = await createSession(signal);
-      const out = await completion({ chatSessionId, prompt, thinking, signal, onDelta, onSent: () => { sent = true; } });
-      discardSession(chatSessionId);
-      if (!out.failed) return { ok: true, text: out.text, thinking: out.thinking };
-      if (out.muted) {
-        if (governor) governor.setCooldown(Math.max(60000, out.mutedUntilMs - Date.now()), 'DeepSeek muted this account');
-        return { ok: false, error: out.failed, rateLimited: true, noticeKind: 'muted', noticeShort: 'DeepSeek muted this account' };
+    for (let attempt = 1; ; attempt += 1) {
+      let chatSessionId = null;
+      const lose = () => { if (!continued) discardSession(chatSessionId); };
+      try {
+        chatSessionId = continued ? remote.id : await createSession(signal);
+        const out = await completion({ chatSessionId, parentMessageId: continued ? (remote.lastId === undefined ? null : remote.lastId) : null, prompt, thinking, signal, onDelta, onSent: () => { sent = true; } });
+        if (!out.failed) {
+          // A chat can only be continued from the message that answered: without its id the chat is not kept.
+          if (keep && out.responseMessageId !== null && out.responseMessageId !== undefined) {
+            return { ok: true, text: out.text, thinking: out.thinking, remote: { id: chatSessionId, lastId: out.responseMessageId } };
+          }
+          if (continued) { /* the engine ends this session */ } else discardSession(chatSessionId);
+          return { ok: true, text: out.text, thinking: out.thinking };
+        }
+        lose();
+        if (out.muted) {
+          if (governor) governor.setCooldown(Math.max(60000, out.mutedUntilMs - Date.now()), 'DeepSeek muted this account');
+          return { ok: false, error: out.failed, rateLimited: true, noticeKind: 'muted', noticeShort: 'DeepSeek muted this account' };
+        }
+        if (out.authExpired) {
+          onAuthExpired(out.failed);
+          return { ok: false, error: out.failed, authExpired: true };
+        }
+        if (out.rateLimited) {
+          if (governor) governor.setCooldown(undefined, '429/403 rate limit');
+          return { ok: false, error: out.failed, rateLimited: true };
+        }
+        return { ok: false, error: out.failed };
+      } catch (err) {
+        lose();
+        if (signal && signal.aborted) return { ok: false, cancelled: true, sent };
+        const classified = err && err.classified ? err.classified : null;
+        if (classified?.type === 'muted') {
+          if (governor) governor.setCooldown(Math.max(60000, classified.until - Date.now()), 'DeepSeek muted this account');
+          return { ok: false, error: classified.message, rateLimited: true, noticeKind: 'muted', noticeShort: 'DeepSeek muted this account' };
+        }
+        if (classified?.type === 'auth_expired') {
+          onAuthExpired(classified.message);
+          return { ok: false, error: classified.message, authExpired: true };
+        }
+        if (classified?.type === 'rate_limited') {
+          if (governor) governor.setCooldown(undefined, '429/403 rate limit');
+          return { ok: false, error: classified.message, rateLimited: true };
+        }
+        if (isNetworkError(err)) {
+          // The connection failed, which says nothing about the account (no pause, no sign-out). Before the message went out nothing was spent, so one more try is safe: the
+          // first request after a laptop wakes up often fails this way. Once the message is out it is not sent again.
+          if (!sent && attempt === 1) {
+            log(`deepseek web: the connection failed before anything was sent (${networkReason(err)}); trying once more`);
+            await pause(networkRetryMs, signal);
+            if (signal && signal.aborted) return { ok: false, cancelled: true, sent };
+            continue;
+          }
+          log(`deepseek web error: ${String((err && err.message) || err)} (${networkReason(err)})`);
+          return sent
+            ? { ok: false, sent: true, error: `The connection to DeepSeek dropped while it was answering (${networkReason(err)}). The answer is not used because part of it is missing. Try again.` }
+            : { ok: false, sent: false, error: `Could not reach DeepSeek (${networkReason(err)}). Nothing was sent. Check the connection and try again.` };
+        }
+        const msg = String((err && err.message) || err);
+        log('deepseek web error: ' + msg);
+        return { ok: false, sent, error: msg || 'DeepSeek could not answer.' };
       }
-      if (out.authExpired) {
-        onAuthExpired(out.failed);
-        return { ok: false, error: out.failed, authExpired: true };
-      }
-      if (out.rateLimited) {
-        if (governor) governor.setCooldown(undefined, '429/403 rate limit');
-        return { ok: false, error: out.failed, rateLimited: true };
-      }
-      return { ok: false, error: out.failed };
-    } catch (err) {
-      discardSession(chatSessionId);
-      if (signal && signal.aborted) return { ok: false, cancelled: true, sent };
-      const classified = err && err.classified ? err.classified : null;
-      if (classified?.type === 'muted') {
-        if (governor) governor.setCooldown(Math.max(60000, classified.until - Date.now()), 'DeepSeek muted this account');
-        return { ok: false, error: classified.message, rateLimited: true, noticeKind: 'muted', noticeShort: 'DeepSeek muted this account' };
-      }
-      if (classified?.type === 'auth_expired') {
-        onAuthExpired(classified.message);
-        return { ok: false, error: classified.message, authExpired: true };
-      }
-      if (classified?.type === 'rate_limited') {
-        if (governor) governor.setCooldown(undefined, '429/403 rate limit');
-        return { ok: false, error: classified.message, rateLimited: true };
-      }
-      const msg = String((err && err.message) || err);
-      log('deepseek web error: ' + msg);
-      return { ok: false, error: msg || 'DeepSeek could not answer.' };
     }
   }
 
-  return { token, completeOnce, REQUEST_TIMEOUT_MS };
+  return { token, completeOnce, closeSession, sessions: true, REQUEST_TIMEOUT_MS };
 }
 
 module.exports = { createDeepSeekWeb, plainError, classifyError, mutedUntil, mutedMessage, REQUEST_TIMEOUT_MS };

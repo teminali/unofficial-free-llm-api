@@ -12,8 +12,8 @@ function sendJson(res, status, payload, headers = {}) {
 const ERROR_TYPES = { 400: 'invalid_request_error', 401: 'authentication_error', 403: 'permission_error', 404: 'invalid_request_error', 413: 'invalid_request_error', 429: 'rate_limit_error' };
 
 /** An error in the shape the OpenAI SDKs read: { error: { message, type, param, code } }. */
-function sendError(res, status, code, message, headers = {}) {
-  sendJson(res, status, { error: { message, type: ERROR_TYPES[status] || 'api_error', param: null, code } }, headers);
+function sendError(res, status, code, message, headers = {}, param = null) {
+  sendJson(res, status, { error: { message, type: ERROR_TYPES[status] || 'api_error', param, code } }, headers);
 }
 
 function readBody(req, limit) {

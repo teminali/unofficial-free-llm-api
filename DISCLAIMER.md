@@ -16,10 +16,10 @@ Developers will know what that means. Here it is in plain words anyway.
   you can afford to lose, and not one you earn from or depend on.
 - **It can stop working at any time.** The bridge depends on the pages and private endpoints of a website. They change
   without notice; when they do, a provider here breaks until someone fixes it.
-- **Your sessions are credentials.** A linked login is stored on your computer in the data folder (`~/.unofficial-llm-api`
-  unless you moved it), readable only by you (mode 0600). Anyone who gets that folder can use your account. The API keys
+- **Your sessions are credentials.** A linked login is stored on your computer in the data folder (`~/.unofficial-free-llm-api`, or
+  `~/.unofficial-llm-api` if version 0.1.x made it, unless you moved it), readable only by you (mode 0600). Anyone who gets that folder can use your account. The API keys
   this server makes are stored only as hashes.
-- **Gemini requests appear in your Gemini activity.** Each request is a chat in your account, like one you typed.
+- **Gemini conversations appear in your Gemini activity.** A conversation is a chat in your account, like one you typed, and it is not deleted from here.
 - **Answers are the web chat's answers.** No SLA, no usage guarantees, no token counts (the numbers in responses are
   estimates), and features the website does not have (a temperature setting, images in, strict function calling) are not
   there. Tool calls are produced by asking the chat for a plain format and reading what comes back; they can be wrong.

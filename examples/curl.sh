@@ -1,5 +1,5 @@
 #!/bin/sh
-# One request, then a streamed one. Set ULA_KEY to a key from the API page (or `unofficial-llm-api key create`).
+# One request, then a streamed one. Set ULA_KEY to a key from the API page (or `unofficial-free-llm-api key create`).
 # MODEL is any id from: curl -s -H "Authorization: Bearer $ULA_KEY" http://localhost:8420/v1/models
 set -eu
 BASE="${ULA_BASE:-http://localhost:8420/v1}"

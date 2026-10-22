@@ -8,6 +8,7 @@
 
 const path = require('path');
 const { createChatEngine } = require('../../engine');
+const { withContext } = require('../../model_info');
 const { createGovernor } = require('../../governor');
 const { fencedBridgeSection } = require('../../bridge');
 const { createGemini } = require('./page');
@@ -16,12 +17,15 @@ const LINK_START_WAIT_MS = 8000;
 
 const fencedCall = (call) => '```json\n' + JSON.stringify(call) + '\n```';
 
-function createGeminiProvider({ dataDir, config, log = () => {}, bus = null, appUrl, plainChromeArgs }) {
+function createGeminiProvider({ dataDir, config, log = () => {}, bus = null, appUrl, plainChromeArgs, sessions = true, sessionOptions, firstWordsMaxMs, waitTraceMs, tabIdleMs, maxTabs, modelsTtlMs }) {
   const saved = config ? config.providerSettings('gemini') : {};
   const governor = createGovernor({ storagePath: path.join(dataDir, 'usage-gemini.json'), providerName: 'Gemini', dailyCap: saved.dailyCap, log });
-  const page = createGemini({ dataDir, log: (l) => log(l), governor, appUrl, plainChromeArgs });
+  const page = createGemini({ dataDir, log: (l) => log(l), governor, appUrl, plainChromeArgs, firstWordsMaxMs, waitTraceMs, tabIdleMs, maxTabs, modelsTtlMs });
+
+  const useSessions = sessions !== false && saved.sessions !== false && process.env.ULA_SESSIONS !== '0';
 
   const engine = createChatEngine({
+    sessions: { enabled: useSessions, options: sessionOptions },
     provider: {
       id: 'gemini',
       name: 'Gemini',
@@ -45,14 +49,16 @@ function createGeminiProvider({ dataDir, config, log = () => {}, bus = null, app
   const provider = {
     id: 'gemini',
     name: 'Gemini',
-    capabilities: { link: 'chrome', token: false, settings: ['dailyCap', 'thinkingLevel'] },
+    capabilities: { link: 'chrome', token: false, settings: ['dailyCap', 'thinkingLevel', 'sessions'] },
     engine,
     governor,
     page,
-    models: () => page.listModels().map((m) => ({ id: m.id, name: m.name, thinking: true, escalate: false })),
+    models: () => page.listModels().map((m) => withContext({ id: m.id, name: m.name, thinking: true, escalate: false })),
+    /** Reads the account's model picker again when the list is old (or `force`); true when it found rows. */
+    refreshModels: (opts) => page.refreshModels(opts),
     async status() {
       const s = await page.status();
-      return { ...s, models: s.models.map((m) => ({ id: m.id, name: m.name, thinking: true })) };
+      return { ...s, models: s.models.map((m) => withContext({ id: m.id, name: m.name, thinking: true })), sessions: engine.sessionInfo() };
     },
     /** Opens the plain Chrome for the sign-in and returns once it is up (the wait for the person goes on behind it). */
     async startLink({ consentAcknowledged }) {
@@ -81,9 +87,14 @@ function createGeminiProvider({ dataDir, config, log = () => {}, bus = null, app
         const r = await page.setThinkingLevel(patch.thinkingLevel);
         if (r && r.ok === false) throw new Error(r.error);
       }
+      if (patch.sessions !== undefined) {
+        const on = patch.sessions === true;
+        await engine.setSessions(on);
+        if (config) config.setProviderSettings('gemini', { sessions: on });
+      }
       return provider.status();
     },
-    stop: () => page.stop()
+    async stop() { await engine.closeSessions(); await page.stop(); }
   };
   return provider;
 }

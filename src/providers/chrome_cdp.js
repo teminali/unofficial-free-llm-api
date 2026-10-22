@@ -14,6 +14,9 @@
  */
 'use strict';
 
+/** What the Google pages send for ads and statistics. Not part of any answer, and a call's list would be mostly this. */
+const ADS_AND_ANALYTICS = /doubleclick\.net|googleadservices|google-analytics|googletagmanager|analytics\.google\.com|\/pagead\/|\/measurement\/conversion|play\.google\.com\/log/;
+
 const { spawn } = require('child_process');
 
 const START_TIMEOUT_MS = 20000;
@@ -139,6 +142,18 @@ function createElement(session, objectId) {
   };
   return {
     click: () => call(function () { this.scrollIntoView({ block: 'center', inline: 'nearest' }); this.click(); return true; }),
+    /** A click as a mouse event from the browser itself, at the middle of the element (how a click is normally made), not the page calling element.click(). */
+    async mouseClick() {
+      const box = await call(function () {
+        this.scrollIntoView({ block: 'center', inline: 'nearest' });
+        const r = this.getBoundingClientRect();
+        return { x: r.left + r.width / 2, y: r.top + r.height / 2, w: r.width, h: r.height };
+      });
+      if (!box || !(box.w > 0 && box.h > 0)) throw new Error('The element has no size to click on.');
+      await session.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: box.x, y: box.y, button: 'left', buttons: 1, clickCount: 1 });
+      await session.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: box.x, y: box.y, button: 'left', buttons: 0, clickCount: 1 });
+      return true;
+    },
     evaluate: (fn, ...args) => call(fn, args)
   };
 }
@@ -148,10 +163,13 @@ function createPage({ session, targetId, base }) {
   let closed = false;
   const closeListeners = [];
 
+  let topFrame = null;
   session.on((method, params) => {
     if (method === '__closed') { closed = true; for (const l of closeListeners) l(); return; }
     // The top frame's address, so a redirect to the Google sign-in can be recognised without asking the page.
-    if (method === 'Page.frameNavigated' && params.frame && !params.frame.parentId && params.frame.url) currentUrl = params.frame.url;
+    if (method === 'Page.frameNavigated' && params.frame && !params.frame.parentId && params.frame.url) { currentUrl = params.frame.url; topFrame = params.frame.id; }
+    // A page that changes its own address without loading (history.replaceState: a chat page gets its conversation's address that way once the first answer is in).
+    if (method === 'Page.navigatedWithinDocument' && params.url && (!topFrame || params.frameId === topFrame)) currentUrl = params.url;
   });
 
   const page = {
@@ -208,6 +226,58 @@ function createPage({ session, targetId, base }) {
       return (result.cookies || []).map((c) => ({ name: c.name, value: c.value, domain: c.domain, path: c.path, expires: c.expires }));
     },
 
+    /**
+     * Starts writing down the page's network requests (fetches, XHRs and documents; not scripts, images or fonts): the method, the host and path, and when each
+     * started, got its first answer and finished, counted from now. Only the shape of a request is kept: no query string (apart from the name of a batch RPC),
+     * no headers, no body. `summary()` is a short line for the log; `stop()` ends the listening.
+     */
+    async watchRequests({ max = 14, quiet = ADS_AND_ANALYTICS } = {}) {
+      // Everything a page can get an answer through is listed (fetch, XHR, an event stream, a document); files it only loads to draw itself are not.
+      const loadedToDraw = new Set(['Image', 'Stylesheet', 'Font', 'Script', 'Media', 'Manifest', 'TextTrack', 'Ping', 'CSPViolationReport', 'SignedExchange']);
+      let quietCount = 0; // ads and analytics: counted, not listed, so they do not push the requests that matter out of the last few
+      const t0 = Date.now();
+      const list = [];
+      const byId = new Map();
+      const at = () => Date.now() - t0;
+      const shape = (raw) => {
+        try {
+          const u = new URL(raw);
+          const rpc = u.searchParams.get('rpcids');
+          return `${u.host}${u.pathname}${rpc ? `[${rpc.slice(0, 24)}]` : ''}`;
+        } catch (_) { return 'unknown'; }
+      };
+      const stopListening = session.on((method, params) => {
+        if (method === 'Network.requestWillBeSent' && !loadedToDraw.has(params.type)) {
+          if (quiet && quiet.test(params.request.url.split('?')[0])) { quietCount += 1; return; }
+          const entry = { method: params.request.method, what: shape(params.request.url), start: at(), first: null, status: null, end: null, failed: null };
+          byId.set(params.requestId, entry);
+          list.push(entry);
+        } else if (method === 'Network.responseReceived' && byId.has(params.requestId)) {
+          const e = byId.get(params.requestId);
+          e.status = params.response.status;
+          e.first = at();
+        } else if (method === 'Network.loadingFinished' && byId.has(params.requestId)) {
+          byId.get(params.requestId).end = at();
+        } else if (method === 'Network.loadingFailed' && byId.has(params.requestId)) {
+          const e = byId.get(params.requestId);
+          e.end = at();
+          e.failed = String(params.errorText || 'failed').slice(0, 30);
+        }
+      });
+      await session.send('Network.enable').catch(() => {});
+      const secs = (ms) => (ms / 1000).toFixed(1);
+      return {
+        /** "POST host/path 200 +0.1s answered +0.4s done +0.9s", one per request, the last few; a request still open says so. */
+        summary() {
+          return list.slice(-max).map((e) => `${e.method} ${e.what} ${e.failed ? `failed(${e.failed})` : (e.status === null ? 'no answer yet' : e.status)} +${secs(e.start)}s${e.first !== null ? ` answered +${secs(e.first)}s` : ''}${e.end !== null ? ` done +${secs(e.end)}s` : ' open'}`).concat(quietCount ? [`${quietCount} ad and analytics request${quietCount === 1 ? '' : 's'} not listed`] : []).join('; ') || 'none';
+        },
+        async stop() {
+          stopListening();
+          await session.send('Network.disable').catch(() => {});
+        }
+      };
+    },
+
     keyboard: {
       insertText: (text) => session.send('Input.insertText', { text: String(text) }),
       async press(key) {
@@ -238,14 +308,14 @@ function createPage({ session, targetId, base }) {
 /**
  * Starts Chrome on a profile folder of the caller's and returns the browser. `close()` ends every tab and then Chrome.
  */
-async function launchChrome({ executablePath, userDataDir, args = [], log = () => {}, startTimeoutMs = START_TIMEOUT_MS }) {
+async function launchChrome({ executablePath, userDataDir, args = [], log = () => {}, startTimeoutMs = START_TIMEOUT_MS, minimal = false }) {
   const child = spawn(executablePath, [
     '--remote-debugging-port=0',
     `--user-data-dir=${userDataDir}`,
     '--no-first-run',
     '--no-default-browser-check',
-    '--disable-restore-session-state',
-    ...args,
+    // `minimal` passes nothing else, to compare a driven Chrome with an ordinary one (diagnosis only)
+    ...(minimal ? [] : ['--disable-restore-session-state', ...args]),
     'about:blank'
   ], { stdio: ['ignore', 'pipe', 'pipe'] });
 
@@ -271,8 +341,10 @@ async function launchChrome({ executablePath, userDataDir, args = [], log = () =
       child.on('error', (err) => finish(reject, new Error('Chrome could not start: ' + (err.message || err))));
       // Chrome started on a profile that another Chrome already holds hands over to it and exits at once with code 0: an earlier Chrome of
       // this program (after a crash or a forced quit) is still running there, and the person can see it.
-      child.on('exit', (code) => finish(reject, new Error(code === 0
-        ? 'A Chrome window that this program opened earlier is still running. Quit that Chrome (Chrome menu, Quit) and try again.'
+      // Exit code 21 is Chrome's own "this profile is in use": another Chrome (an earlier one of this program, or a window the person opened on the same
+      // folder) has it. A Chrome never runs twice on one profile folder.
+      child.on('exit', (code) => finish(reject, new Error(code === 0 || code === 21
+        ? 'Another Chrome is using this program\'s profile folder (a window this program opened earlier, or one that was opened on the same folder). Quit that Chrome (Chrome menu, Quit) and try again.'
         : `Chrome closed before this program could reach it (code ${code}).`)));
     });
   } catch (err) {

@@ -1,6 +1,6 @@
 /**
- * Where this bridge keeps things, and the small config file: API keys (stored as hashes, shown once), the admin token that opens the web interface,
- * and per-provider settings. Everything lives in one folder, `~/.unofficial-llm-api` unless ULA_HOME says otherwise, created 0700; every file in it that
+ * Where this bridge keeps things, and the small config file: API keys (the hash that checks a call, and the key itself so the interface can show it again), the admin
+ * token that opens the web interface, and per-provider settings. Everything lives in one folder, `~/.unofficial-free-llm-api` (or `~/.unofficial-llm-api` where 0.1.x already made it) unless ULA_HOME says otherwise, created 0700; every file in it that
  * holds a login is 0600.
  */
 'use strict';
@@ -12,8 +12,12 @@ const path = require('path');
 
 const KEY_PREFIX = 'sk-ula-';
 
-function defaultDataDir() {
-  return process.env.ULA_HOME ? path.resolve(process.env.ULA_HOME) : path.join(os.homedir(), '.unofficial-llm-api');
+/** The folder up to 0.1.x used, before the program was renamed: it holds people's keys and logins, so it stays the one in use while the new one does not exist. */
+function defaultDataDir({ home = os.homedir(), env = process.env } = {}) {
+  if (env.ULA_HOME) return path.resolve(env.ULA_HOME);
+  const current = path.join(home, '.unofficial-free-llm-api');
+  const before = path.join(home, '.unofficial-llm-api');
+  return !fs.existsSync(current) && fs.existsSync(before) ? before : current;
 }
 
 function ensureDir(dir) {
@@ -112,7 +116,11 @@ function createConfig({ dataDir = defaultDataDir() } = {}) {
     seen = mtime();
   };
 
-  /** Makes a key, keeps only its hash, and hands the key back: this is the one time it can be read. */
+  /**
+   * Makes a key and hands it back. The file keeps its hash (what a call is checked against) and the key itself, so the person can copy it again next time instead of
+   * making a new one. That adds nothing for someone who can read this file: it also holds the admin token, which can make keys. A key made by version 0.1.0 has the
+   * hash only and cannot be shown.
+   */
   function createApiKey(name = '') {
     refresh();
     const secret = KEY_PREFIX + crypto.randomBytes(24).toString('base64url');
@@ -120,6 +128,7 @@ function createConfig({ dataDir = defaultDataDir() } = {}) {
       id: crypto.randomBytes(6).toString('hex'),
       name: String(name || '').trim().slice(0, 60) || 'key',
       hash: sha256(secret),
+      secret,
       hint: `${secret.slice(0, KEY_PREFIX.length + 4)}...${secret.slice(-4)}`,
       createdAt: new Date().toISOString(),
       lastUsedAt: null
@@ -129,9 +138,16 @@ function createConfig({ dataDir = defaultDataDir() } = {}) {
     return { key: secret, entry: publicKey(entry) };
   }
 
-  const publicKey = (e) => ({ id: e.id, name: e.name, hint: e.hint, createdAt: e.createdAt, lastUsedAt: e.lastUsedAt });
+  const publicKey = (e) => ({ id: e.id, name: e.name, hint: e.hint, createdAt: e.createdAt, lastUsedAt: e.lastUsedAt, revealable: typeof e.secret === 'string' && e.secret !== '' });
 
   function listApiKeys() { refresh(); return state.apiKeys.map(publicKey); }
+
+  /** The key itself, for a key made since it could be kept; null for an unknown id and for a key that was stored as a hash only. */
+  function revealApiKey(id) {
+    refresh();
+    const found = state.apiKeys.find((k) => k.id === id);
+    return found && typeof found.secret === 'string' && found.secret ? found.secret : null;
+  }
 
   function revokeApiKey(id) {
     refresh();
@@ -168,7 +184,7 @@ function createConfig({ dataDir = defaultDataDir() } = {}) {
     return providerSettings(id);
   }
 
-  return { dataDir, file, createApiKey, listApiKeys, revokeApiKey, findApiKey, adminTokenMatches, adminToken: () => state.adminToken, providerSettings, setProviderSettings };
+  return { dataDir, file, createApiKey, listApiKeys, revealApiKey, revokeApiKey, findApiKey, adminTokenMatches, adminToken: () => state.adminToken, providerSettings, setProviderSettings };
 }
 
 module.exports = { createConfig, defaultDataDir, readJson, writeJson, removeTree, ensureDir, safeEqual, sha256, KEY_PREFIX };

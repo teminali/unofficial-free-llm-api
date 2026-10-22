@@ -113,7 +113,7 @@ async function solveAsync(challenge, slice = 4000) {
 }
 
 function headerFor(challenge, answer) {
-  if (answer === null) throw new Error('DeepSeek refused the proof-of-work challenge');
+  if (answer === null) throw new Error('This program could not solve DeepSeek\'s proof-of-work challenge, so the request was not sent. DeepSeek may have changed it: the bridge may need an update.');
   return Buffer.from(JSON.stringify({
     algorithm: challenge.algorithm,
     challenge: challenge.challenge,

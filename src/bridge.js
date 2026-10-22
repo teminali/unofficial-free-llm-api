@@ -206,6 +206,51 @@ function toolDefs(tools) {
   return tools.map((t) => (t && t.function ? t.function : t)).filter((f) => f && typeof f.name === 'string' && f.name);
 }
 
+// ---- telling a conversation apart from another, without keeping any of it ---------------------------------------------------------------------------------
+// A provider chat that is continued (instead of started again for every request) needs to know which messages it already holds. Each message is reduced to a
+// short hash of what makes it that message: its role, its words and, for an assistant message, the name and the arguments of each call (not the call ids,
+// which are made fresh for every answer, and not the order the keys of the arguments came back in). Only hashes are ever kept, never the text.
+
+/** JSON with the keys of every object in sorted order, so two spellings of the same arguments are one string. */
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (value && typeof value === 'object') return `{${Object.keys(value).sort().map((k) => `${JSON.stringify(k)}:${stableJson(value[k])}`).join(',')}}`;
+  return JSON.stringify(value === undefined ? null : value);
+}
+
+const shortHash = (text) => crypto.createHash('sha1').update(text).digest('hex').slice(0, 20);
+
+/** The hash of one message of the conversation (not a system message: see conversationFingerprints). */
+function fingerprint(message) {
+  const m = message || {};
+  const role = m.role === 'function' ? 'tool' : String(m.role || '');
+  let calls = '';
+  if (role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length) {
+    calls = m.tool_calls.map((c) => {
+      const f = c && c.function ? c.function : {};
+      const args = parseArgs(f.arguments);
+      return `${f.name || ''}\u0001${args ? stableJson(args) : String(f.arguments || '')}`;
+    }).join('\u0002');
+  }
+  return shortHash(`${role}\u0000${contentToText(m.content).trim()}\u0000${calls}`);
+}
+
+/**
+ * What a request says about its conversation: `system` (one hash for all the system text) and `talk` (one hash for each message that is not a system message,
+ * in order: the same messages buildPrompt calls the transcript).
+ */
+function conversationFingerprints(messages) {
+  const list = Array.isArray(messages) ? messages.filter(Boolean) : [];
+  const system = list.filter((m) => m.role === 'system').map((m) => contentToText(m.content)).filter(Boolean).join('\n\n');
+  return { system: shortHash(`system\u0000${system}`), talk: list.filter((m) => m.role !== 'system').map(fingerprint) };
+}
+
+/** What the tools of a request are, as one hash: the same tools in another order, or with their keys in another order, are the same tools. */
+function toolsKey(tools) {
+  const defs = Array.isArray(tools) ? toolDefs(tools) : [];
+  return shortHash(stableJson(defs.map((f) => ({ name: f.name, description: f.description || '', parameters: f.parameters || null })).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))));
+}
+
 // Tools whose job is to create or change files. A coding agent that offers one of these needs telling, in words, to deliver code through it and not paste it into the
 // chat; a request with no such tool (a weather lookup, say) must stay free to answer with code in the chat. Everything the bridge says about tools comes from the tools it
 // was actually offered.
@@ -296,7 +341,11 @@ function jsonInstruction(format) {
  * One prompt for a provider that takes a single text message, from the whole conversation: the system messages first, the tool bridge when tools are offered, the
  * transcript with each earlier tool call and its result, and a closing line that says what to do now.
  * options: bridge(tools), noToolsHint (the closing line when tools are offered), formatCall(call), continueHint, closing (a closing line that replaces all of
- * those), jsonMode ({ type: 'json_object' | 'json_schema', json_schema }).
+ * those), jsonMode ({ type: 'json_object' | 'json_schema', json_schema }), continuation ({ from, refreshBridge }).
+ *
+ * `continuation` is for a chat that already holds the conversation up to message number `from` of the transcript (the messages that are not system messages): only
+ * the messages from there on are written, with no system text and no bridge (the chat has them), unless `refreshBridge` asks for the bridge to be said again. A
+ * lone new question with no tools and no JSON mode goes as it is, like the first message of a plain chat does.
  */
 function buildPrompt(messages, tools, options = {}) {
   const list = Array.isArray(messages) ? messages : [];
@@ -304,10 +353,12 @@ function buildPrompt(messages, tools, options = {}) {
   const json = jsonInstruction(options.jsonMode);
   const system = list.filter((m) => m && m.role === 'system').map((m) => contentToText(m.content)).filter(Boolean).join('\n\n');
   const talk = list.filter((m) => m && m.role !== 'system');
+  const cont = options.continuation && Number.isInteger(options.continuation.from) ? options.continuation : null;
+  const shown = cont ? talk.slice(cont.from) : talk;
   // A plain question with nothing around it goes as it is: a framed transcript is only needed when there is something to frame. A caller that asks for
   // a closing line of its own (options.closing, the question put to a thinking mode) always gets it.
-  if (!hasTools && !json && !options.closing && talk.length === 1 && talk[0].role === 'user') {
-    return [system, contentToText(talk[0].content)].filter(Boolean).join('\n\n');
+  if (!hasTools && !json && !options.closing && shown.length === 1 && shown[0].role === 'user' && (cont || talk.length === 1)) {
+    return [cont ? '' : system, contentToText(shown[0].content)].filter(Boolean).join('\n\n');
   }
   const bridge = options.bridge || bridgeSection;
   const noToolsHint = hasTools ? (options.noToolsHint || TOOLS_HINT) : PLAIN_HINT;
@@ -315,8 +366,12 @@ function buildPrompt(messages, tools, options = {}) {
   const formatCall = typeof options.formatCall === 'function' ? options.formatCall : (call) => `<tool_call>${JSON.stringify(call)}</tool_call>`;
   const continueHint = hasTools ? (options.continueHint || 'The tool result above is real. Continue the task now: call another tool, or give the final answer.') : 'Continue the conversation now.';
   const names = new Map();
-  const transcript = [];
+  // A tool result is named by the call it answers, and that call may be in the part of the conversation the chat already holds.
   for (const m of talk) {
+    if (m.role === 'assistant' && Array.isArray(m.tool_calls)) for (const c of m.tool_calls) if (c && c.id && c.function && c.function.name) names.set(String(c.id), String(c.function.name));
+  }
+  const transcript = [];
+  for (const m of shown) {
     if (m.role === 'user') {
       transcript.push(`USER:\n${contentToText(m.content)}`);
       continue;
@@ -345,8 +400,8 @@ function buildPrompt(messages, tools, options = {}) {
     }
   }
   const sections = [];
-  if (system) sections.push(system);
-  if (hasTools) sections.push(bridge(tools));
+  if (system && !cont) sections.push(system);
+  if (hasTools && (!cont || cont.refreshBridge)) sections.push(bridge(tools));
   if (transcript.length) sections.push(transcript.join('\n\n'));
   if (json) sections.push(json);
   const last = talk[talk.length - 1];
@@ -602,5 +657,6 @@ function bodyHold(text, bare) {
 
 module.exports = {
   buildPrompt, parseAnswer, markerHold, bareHold, fenceHold, bodyHold, opensCall, unreadableCall, thinkRequest, trailingRepeat, callSignature,
-  bridgeSection, fencedBridgeSection, jsonInstruction, contentToText, parseArgs, taskKeyOf, withThoughts, toolDefs, hasFileTools, closedJson, tryJson
+  bridgeSection, fencedBridgeSection, jsonInstruction, contentToText, parseArgs, taskKeyOf, withThoughts, toolDefs, hasFileTools, closedJson, tryJson,
+  stableJson, fingerprint, conversationFingerprints, toolsKey
 };

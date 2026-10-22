@@ -7,22 +7,32 @@
  */
 'use strict';
 
+const fs = require('fs');
 const path = require('path');
+const { writeJson, readJson } = require('../../config');
 const { createChatEngine } = require('../../engine');
+const { withContext } = require('../../model_info');
 const { createGovernor, DEEPSEEK_PACE } = require('../../governor');
 const { bridgeSection } = require('../../bridge');
 const { createDeepSeekWeb, REQUEST_TIMEOUT_MS } = require('./web');
 const { createDeepSeekAccount } = require('./link');
 const { resolveBase } = require('./base');
 
-function createDeepSeekProvider({ dataDir, config, log = () => {}, bus = null, base, pace = DEEPSEEK_PACE, plainChromeArgs, drivenChromeArgs }) {
+function createDeepSeekProvider({ dataDir, config, log = () => {}, bus = null, base, pace = DEEPSEEK_PACE, plainChromeArgs, drivenChromeArgs, sessions = true, sessionOptions, networkRetryMs, closeRetryMs }) {
   const saved = config ? config.providerSettings('deepseek') : {};
   const address = resolveBase(base);
   const governor = createGovernor({ storagePath: path.join(dataDir, 'usage-deepseek.json'), providerName: 'DeepSeek', dailyCap: saved.dailyCap, pace, log });
   const account = createDeepSeekAccount({ dataDir, base: address, log, governor, plainChromeArgs, drivenChromeArgs });
-  const web = createDeepSeekWeb({ dataDir, base: address, log, governor, onAuthExpired: (reason) => account.markExpired(reason) });
+  const web = createDeepSeekWeb({ dataDir, base: address, log, governor, networkRetryMs, closeRetryMs, onAuthExpired: (reason) => account.markExpired(reason) });
+
+  // The chats this program keeps open for sessions are written down (ids only), so one that a killed program left behind is removed the next time.
+  const idsFile = path.join(dataDir, 'sessions-deepseek.json');
+  const orphans = (() => { const saved = readJson(idsFile); return saved && Array.isArray(saved.chats) ? saved.chats.map(String).slice(0, 50) : []; })();
+  const persist = (ids) => { try { if (ids.length) writeJson(idsFile, { chats: ids }); else fs.rmSync(idsFile, { force: true }); } catch (_) { /* a chat id that was not written down is only a chat left in the history */ } };
+  const useSessions = sessions !== false && saved.sessions !== false && process.env.ULA_SESSIONS !== '0';
 
   const engine = createChatEngine({
+    sessions: { enabled: useSessions, options: sessionOptions, persist, orphans },
     provider: {
       id: 'deepseek',
       name: 'DeepSeek',
@@ -43,12 +53,12 @@ function createDeepSeekProvider({ dataDir, config, log = () => {}, bus = null, b
   const provider = {
     id: 'deepseek',
     name: 'DeepSeek',
-    capabilities: { link: 'chrome', token: true, settings: ['dailyCap'] },
+    capabilities: { link: 'chrome', token: true, settings: ['dailyCap', 'sessions'] },
     engine,
     governor,
     account,
-    models: () => account.listModels(),
-    status: () => account.status(),
+    models: () => account.listModels().map(withContext),
+    async status() { return { ...(await account.status()), sessions: engine.sessionInfo() }; },
     startLink: (opts) => account.startLink(opts),
     finishLink: (opts) => account.finishLink(opts),
     linkToken: (opts) => account.linkToken(opts),
@@ -61,9 +71,14 @@ function createDeepSeekProvider({ dataDir, config, log = () => {}, bus = null, b
         governor.setDailyCap(n);
         if (config) config.setProviderSettings('deepseek', { dailyCap: n });
       }
-      return account.status();
+      if (patch.sessions !== undefined) {
+        const on = patch.sessions === true;
+        await engine.setSessions(on);
+        if (config) config.setProviderSettings('deepseek', { sessions: on });
+      }
+      return provider.status();
     },
-    stop: () => account.stop()
+    async stop() { await engine.closeSessions(); await account.stop(); }
   };
   return provider;
 }
