@@ -50,7 +50,7 @@
   "scripts": {
     "start": "node bin/unofficial-free-llm-api.js",
     "demo": "node bin/unofficial-free-llm-api.js --demo --providers demo",
-    "test": "node --test \"test/**/*.test.js\""
+    "test": "node --test --test-timeout=300000 \"test/**/*.test.js\""
   },
   "devDependencies": {
     "jsdom": "^26.1.0"

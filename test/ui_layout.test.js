@@ -19,6 +19,7 @@ const { createConfig } = require('../src/config');
 const { createRegistry } = require('../src/registry');
 const { createServer } = require('../src/server');
 const { chromeExecutable } = require('../src/providers/chrome');
+const { cleanupDir } = require('./fixtures/cleanup');
 const { createFakeProvider } = require('./fixtures/fake_provider');
 
 const WEB = path.join(__dirname, '..', 'web');
@@ -164,7 +165,10 @@ async function startChrome() {
       child.kill('SIGTERM');
       await Promise.race([new Promise((r) => child.once('exit', r)), wait(3000)]);
       try { child.kill('SIGKILL'); } catch (_) { /* gone */ }
-      fs.rmSync(profile, { recursive: true, force: true });
+      // Chrome's helper processes can outlive it (on Linux) and hold its stdout and stderr open: this test's end of them is let go, or the test process cannot exit
+      // and the test runner of Node 22 waits for it for ever.
+      try { child.stdout.destroy(); child.stderr.destroy(); } catch (_) { /* closed */ }
+      await cleanupDir(profile);
     }
   };
 }

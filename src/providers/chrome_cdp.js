@@ -354,6 +354,7 @@ async function launchChrome({ executablePath, userDataDir, args = [], log = () =
   } catch (err) {
     // A Chrome that started but never answered would stay running on the profile folder and block every later start with "quit that Chrome".
     try { child.kill('SIGKILL'); } catch (_) { /* already gone */ }
+    try { child.stdout.destroy(); child.stderr.destroy(); } catch (_) { /* already closed */ }
     throw err;
   }
 
@@ -406,6 +407,8 @@ async function launchChrome({ executablePath, userDataDir, args = [], log = () =
       await Promise.race([exited, sleep(3000)]);
       try { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); } catch (_) {}
       await Promise.race([exited, sleep(1500)]);
+      // On Linux Chrome's helper processes can outlive it and keep its stdout and stderr open; this program's end of those pipes is let go, so they cannot keep it alive.
+      try { child.stdout.destroy(); child.stderr.destroy(); } catch (_) { /* already closed */ }
     }
   };
 }

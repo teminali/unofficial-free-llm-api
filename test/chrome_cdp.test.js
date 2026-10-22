@@ -6,6 +6,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { launchChrome } = require('../src/providers/chrome_cdp');
+const { cleanupDir } = require('./fixtures/cleanup');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (_) { return false; } };
@@ -74,7 +75,7 @@ test('a click can be made as a real mouse event at the middle of the element, no
     assert.deepEqual(await page.evaluate(() => [window.last, window.clicks]), [false, 1], 'element.click() is the page\'s own call');
     await button.mouseClick();
     assert.deepEqual(await page.evaluate(() => [window.last, window.clicks]), [true, 2], 'a mouse event from the browser, once');
-  } finally { await browser.close().catch(() => {}); fs.rmSync(dir, { recursive: true, force: true }); }
+  } finally { await browser.close().catch(() => {}); await cleanupDir(dir); }
 });
 
 test('the request list shows every kind of request that can carry an answer (fetch, XHR, an event stream), leaves out files a page only loads, and counts the ads and analytics it does not list', async () => {
@@ -108,7 +109,7 @@ test('the request list shows every kind of request that can carry an answer (fet
     assert.ok(!/noise/.test(text), 'the ads and analytics are not listed: ' + text);
     assert.match(text, /2 ad and analytics requests not listed/, text);
     await net.stop();
-  } finally { await browser.close().catch(() => {}); server.closeAllConnections(); server.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+  } finally { await browser.close().catch(() => {}); server.closeAllConnections(); server.close(); await cleanupDir(dir); }
 });
 
 test('a Chrome that cannot open a window because this computer has no display says that, and what to do, not a bare exit code', async () => {
