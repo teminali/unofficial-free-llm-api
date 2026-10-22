@@ -425,6 +425,10 @@ dialog.dlg .codeblock pre { white-space: pre-wrap; overflow-wrap: anywhere; }
   dialog.dlg.wide { width: 100%; }
   .dlg-actions .btn { flex: 1; }
 }
+@media (max-width: 479px) {
+  /* a phone: the name stays in full. It stays on one line while it fits, and wraps to a second one, inside the top bar, when this computer's font is wider than the room (it was cut with an ellipsis before) */
+  .brand-name { white-space: normal; overflow: visible; line-height: 1.15; }
+}
 @media (max-width: 359px) {
   /* the name stays, on two short lines beside the logo; the model list gets a row of its own and the three buttons share the one below */
   .brand { gap: var(--s2); }

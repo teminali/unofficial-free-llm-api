@@ -32,6 +32,9 @@ const FAST = { perMinute: 1000, minGapMs: 1, cooldownMs: DEEPSEEK_PACE.cooldownM
 const user = (text) => ({ role: 'user', content: text });
 const WEATHER = [{ type: 'function', function: { name: 'get_weather', description: 'Current weather for a city', parameters: { type: 'object', properties: { city: { type: 'string' } }, required: ['city'] } } }];
 const skipChrome = chromeExecutable() ? false : 'Chrome is not installed';
+// A windowed Chrome needs a display; a Linux computer with none (a server, CI without xvfb-run) skips the tests that open a window.
+const noDisplay = process.platform === 'linux' && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY;
+const skipWindow = skipChrome || (noDisplay ? 'a windowed Chrome needs a display (run under xvfb-run)' : false);
 
 // `sessions` is off here: these tests are about one request on one chat, the way every request ran before sessions (test/deepseek_sessions.test.js is about sessions).
 // The Chrome that checks the sign-in is told what to be: hidden by default here (these tests are about everything but that window), or an ordinary window kept out of the way.
@@ -109,7 +112,7 @@ test('linking through Chrome reads the session token and the cookies (HttpOnly o
   } finally { await t.provider.stop(); await t.close(); }
 });
 
-test('the real site refuses a hidden Chrome, so the check that reads the sign-in runs in an ordinary window, and the session it keeps has the WAF token', { skip: skipChrome, timeout: 90000 }, async () => {
+test('the real site refuses a hidden Chrome, so the check that reads the sign-in runs in an ordinary window, and the session it keeps has the WAF token', { skip: skipWindow, timeout: 90000 }, async () => {
   const t = await boot({ link: 'none', driven: OUT_OF_THE_WAY, site: { blockHeadless: true } });
   try {
     assert.equal((await t.provider.startLink({ consentAcknowledged: true })).ok, true);
@@ -122,7 +125,7 @@ test('the real site refuses a hidden Chrome, so the check that reads the sign-in
   } finally { await t.provider.stop(); await t.close(); }
 });
 
-test('the WAF token is waited for: the site issues it a moment after the page loaded, and the session keeps it', { skip: skipChrome, timeout: 90000 }, async () => {
+test('the WAF token is waited for: the site issues it a moment after the page loaded, and the session keeps it', { skip: skipWindow, timeout: 90000 }, async () => {
   const t = await boot({ link: 'none', driven: OUT_OF_THE_WAY, site: { wafDelayMs: 1500 } });
   try {
     assert.equal((await t.provider.startLink({ consentAcknowledged: true })).ok, true);

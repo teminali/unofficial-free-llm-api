@@ -33,6 +33,8 @@ The old npm package is deprecated and points here.
   reported as failed requests instead of answers, a quick-reply control the page draws inside an answer is no longer read as part of it, a Chrome that another
   program is using on the profile is named as that, and `log` prints the request timeline of each call.
 - The Playground's footer names every chat that holds the conversation when a model change has spread it over several.
+- On a phone-width window the brand name wraps onto a second line when this computer's font is wider than the room, instead of being cut with an ellipsis.
+- A Chrome that cannot open a window because the computer has no display (a server) says so and points to the token and copy-the-session routes, not "code 1".
 
 ### Known
 

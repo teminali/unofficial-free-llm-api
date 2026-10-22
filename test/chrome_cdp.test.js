@@ -110,3 +110,16 @@ test('the request list shows every kind of request that can carry an answer (fet
     await net.stop();
   } finally { await browser.close().catch(() => {}); server.closeAllConnections(); server.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('a Chrome that cannot open a window because this computer has no display says that, and what to do, not a bare exit code', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ula-cdp-'));
+  try {
+    const exe = path.join(dir, 'chrome-without-display');
+    fs.writeFileSync(exe, '#!/bin/sh\necho "[1234:1234:1022/120000.000:ERROR:ozone_platform_x11.cc(245)] Missing X server or $DISPLAY" >&2\necho "[1234:1234:1022/120000.000:ERROR:env.cc(257)] The platform failed to initialize.  Exiting." >&2\nexit 1\n', { mode: 0o755 });
+    await assert.rejects(
+      launchChrome({ executablePath: exe, userDataDir: path.join(dir, 'profile'), startTimeoutMs: 3000 }),
+      (err) => /no display|no desktop/i.test(err.message) && /paste|token|desktop/i.test(err.message) && !/\(code \d+\)/.test(err.message),
+      'the cause is named'
+    );
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});

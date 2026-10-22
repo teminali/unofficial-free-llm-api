@@ -343,9 +343,13 @@ async function launchChrome({ executablePath, userDataDir, args = [], log = () =
       // this program (after a crash or a forced quit) is still running there, and the person can see it.
       // Exit code 21 is Chrome's own "this profile is in use": another Chrome (an earlier one of this program, or a window the person opened on the same
       // folder) has it. A Chrome never runs twice on one profile folder.
+      // On a computer with no display (a server) Chrome cannot open a window and says so on stderr before it leaves.
+      const noDisplay = () => /Missing X server|\$DISPLAY|cannot open display|platform failed to initialize/i.test(output);
       child.on('exit', (code) => finish(reject, new Error(code === 0 || code === 21
         ? 'Another Chrome is using this program\'s profile folder (a window this program opened earlier, or one that was opened on the same folder). Quit that Chrome (Chrome menu, Quit) and try again.'
-        : `Chrome closed before this program could reach it (code ${code}).`)));
+        : noDisplay()
+          ? 'Chrome needs a desktop to open its window, and this computer has no display. Link on a computer with a desktop and copy the session over (docs/providers.md, "Running with no desktop"), or paste a DeepSeek token on the Accounts page (Advanced).'
+          : `Chrome closed before this program could reach it (code ${code}).`)));
     });
   } catch (err) {
     // A Chrome that started but never answered would stay running on the profile folder and block every later start with "quit that Chrome".
