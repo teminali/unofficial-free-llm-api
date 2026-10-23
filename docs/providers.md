@@ -1,18 +1,19 @@
 # Providers
 
-Both providers are driven the way a person uses the site. Linking never sees a password: you sign in yourself, in a Chrome window.
+The three providers are driven the way a person uses the site. Linking never sees a password: you sign in yourself, in a Chrome window.
 
-## How linking works (both providers)
+## How linking works (all three providers)
 
 1. **Link account** opens an ordinary Chrome window on a private profile folder inside the data folder
-   (`<data>/deepseek-chrome` or `<data>/gemini-chrome`), never your everyday profile. It is started without a debugging port, so the
+   (`<data>/deepseek-chrome`, `gemini-chrome` or `qwen-chrome`), never your everyday profile. It is started without a debugging port, so the
    sign-in is an ordinary one (Google refuses a sign-in from a browser that is being driven).
 2. You sign in there, then press **I have signed in** in the web interface.
 3. The bridge quits that Chrome, starts another on the same profile, checks you are signed in and reads what it needs:
-   DeepSeek's session token and cookies, or Gemini's model picker. Then it works without the window. For DeepSeek this check is an
+   DeepSeek's session token and cookies, Gemini's model picker, or Qwen's token and model list. For DeepSeek this check is an
    ordinary Chrome window that opens for a few seconds, because DeepSeek answers a hidden Chrome with a "request blocked" page and
    gives it none of the cookies its API needs (`ULA_DEEPSEEK_HIDDEN=1` brings the hidden one back). If DeepSeek refuses the check
-   anyway, the Accounts card says so, and **Advanced: paste a session token** still works.
+   anyway, the Accounts card says so, and **Advanced: paste a session token** still works. DeepSeek then works without a window;
+   Gemini runs in the background; Qwen keeps a Chrome window open while the program runs, because its requests go through the page.
 
 Unlinking deletes the saved session and the profile folder.
 
@@ -55,8 +56,31 @@ Set `ULA_CHROME_PATH` if Chrome is somewhere unusual. Chromium and Edge are trie
 - **Speed.** Gemini is slow and uneven through this lane (4 seconds to over a minute). The program's tab sends the request within a tenth of a second; the wait is Gemini's own answer. The measurements and what was ruled out are in the README, under *If something does not work*; `unofficial-free-llm-api log` prints the request timeline of each call.
 - The page's markup is read with selectors that Google renames without notice. Every miss is logged (`ULA_DEBUG=1`); when the lane breaks, that line says what to fix.
 
+## Qwen
+
+- Drives chat.qwen.ai in a Chrome window with the private profile. The window stays open while the program runs. A request is typed into the page's real
+  message box and sent with one Send click; the outgoing request and its stream are read from the page. Before an answer is accepted, the request is checked for
+  the exact message, model, account and conversation the bridge meant to use. A mismatch fails the request instead of accepting the answer.
+- One chat for a whole conversation, like DeepSeek: a continuation goes into the same chat and carries only what is new. Chats this program created are tracked
+  in `chats-qwen.json` (ids only, never words) and removed when their conversation has been quiet for 20 minutes, when more than 6 are open, when one grows long,
+  or when the program stops. Your other Qwen chats are never touched. A removal is deferred while that chat has a draft or an answer in its composer.
+- Models: Qwen has no fixed aliases. The ids are the ones your account offers, for example `qwen3.7-plus` or `qwen3.8-max`. The list is read when you link, refreshed
+  in the background whenever a client lists the models, and can be forced with *Read models again* (or `POST /_/providers/qwen/refresh-models`, signed in).
+- **Limits.** Qwen can ask for a browser verification (a slider or similar). When it does, the request fails with `403 qwen_verification_required`, the lane pauses
+  for 20 minutes, and you complete the check in the Qwen window yourself. The program does not try to pass it or retry around it. Qwen can also return a model's daily
+  limit as ordinary answer text (Qwen3.8-Max did): that text is returned as the answer, not detected as an error, and no other model is tried.
+- Pace: at least 10 seconds between requests, 6 a minute, 100 a day by default. A refusal or a verification sets a 20-minute pause.
+- **Cancellation.** A request the client cancels is not retried. If Qwen had already confirmed it, the page's Stop button is clicked; if the click never went out,
+  the exact draft is cleared only on the same account and page, so a message that was not sent is not left behind.
+- **Speed, measured on 2026-10-23 with Qwen3.7-Plus:** a new chat took about 24 seconds for its first answer (most of it opening the chat and waiting for the page's
+  composer), and a follow-up in an open chat took about 5 seconds. A recovery after a page change took about 16 seconds.
+- The page's markup is read with selectors that Alibaba renames without notice. Every miss is logged (`ULA_DEBUG=1`); the `qwen:` lines carry stages, statuses and
+  sizes, never prompts or answers.
+
 ## Running with no desktop (server, container)
 
 Linking needs a window. Link on your computer, then copy the provider's session folder into the server's data folder:
-`deepseek_session.json` for DeepSeek, `gemini_session.json` plus `gemini-chrome/` for Gemini. A server needs Chrome installed for Gemini. A session
-copied to another machine or address may be signed out by the provider. This is not tested, and is the first thing to try if you need it.
+`deepseek_session.json` for DeepSeek, or `gemini_session.json` plus `gemini-chrome/` for Gemini. A server needs Chrome installed for Gemini. Qwen is not
+supported without a desktop: its Chrome window must stay open and visible while requests run, so copying `qwen_session.json` and `qwen-chrome/` to a headless
+server is not enough. A session copied to another machine or address may be signed out by the provider. This is not tested, and is the first thing to try if you
+need it.

@@ -23,7 +23,11 @@ The models of the accounts that are linked and signed in right now. An expired o
 
 **`context_length`** is a working size this program chooses (128000 tokens), not the model's maximum: the chat websites publish no limits, and the figures that exist are for the developer APIs. Plan prompts around it. It is set in one place (`src/model_info.js`).
 
+`owned_by` is the provider id: `deepseek`, `gemini` or `qwen`.
+
 **Gemini's list follows the account.** The names a client can rely on never go stale: `gemini` and `gemini-auto` are always listed and mean the mode the Gemini page is on (an account whose picker has a row called Auto gets that row under `gemini-auto`, and it is really chosen). After them come the rows the account's picker offers right now, for example `gemini-3-5-flash-lite` or `gemini-3-1-pro`; a row the account does not have is not listed. The picker is read again when the list is older than 15 minutes: on a real request, or in the background when a client lists the models (the answer is the list as it is; it is right the next time). `POST /_/providers/gemini/refresh-models` (admin) forces a read. A locked row is never listed.
+
+**Qwen's list follows the account too.** Qwen has no fixed aliases: the ids are the ones your account offers, for example `qwen3.7-plus` or `qwen3.8-max`. The list is read when you link and refreshed in the background whenever a client lists the models (the answer is the list as it is; it is right the next time), so a model added to the account appears on the next listing. `POST /_/providers/qwen/refresh-models` (admin) or *Read models again* forces a read. A read that finds nothing keeps the old list.
 
 ## `POST /v1/chat/completions`
 
@@ -35,7 +39,7 @@ The models of the accounts that are linked and signed in right now. An expired o
 | `stream_options.include_usage` | adds a last chunk with `usage` |
 | `tools`, `tool_choice` | yes, see below. `tool_choice: "none"` sends the request as plain chat |
 | `response_format` | `json_object` and `json_schema` are asked for in words; the chat is not forced into them |
-| `reasoning_effort` | `low` / `medium` / `high` (`minimal` counts as low). Used by Gemini; ignored by DeepSeek |
+| `reasoning_effort` | `low` / `medium` / `high` (`minimal` counts as low). Used by Gemini; ignored by DeepSeek and Qwen |
 | `user`, header `X-ULA-Session` | names the conversation, so two conversations that begin alike keep their own provider chats (see Sessions) |
 | `n` | must be 1 (anything else is `400 unsupported_parameter`) |
 | `max_tokens` / `max_completion_tokens`, `stop` (a string or up to four) | done here, for a request **with no tools**: the answer is cut at the size (a token is estimated as four characters) or at the first stop string, `finish_reason` says `length` or `stop`, and while streaming the provider is told to stop sending. With `tools` they are ignored (a cut through a tool call is a broken call) and named in `X-ULA-Ignored` |
@@ -79,7 +83,8 @@ chat. What makes a request a different conversation: another model, other `tools
 different `user` / `X-ULA-Session` name. The usage numbers still count the whole conversation, as any API would.
 
 Chats are closed after 20 minutes without a request, when more than 6 are open, when one grows past about 150,000 characters or 80 requests, and when the program
-stops (a Gemini chat stays in your Gemini history). Turn this off with `--no-sessions`, `ULA_SESSIONS=0` or the switch on the Accounts page.
+stops. DeepSeek and the Qwen chats this program created are deleted; a Gemini chat stays in your Gemini history, and Qwen chats this program did not create are
+never touched. Turn this off with `--no-sessions`, `ULA_SESSIONS=0` or the switch on the Accounts page.
 
 ### Errors
 
@@ -89,6 +94,7 @@ OpenAI-shaped: `{ "error": { "message", "type", "param", "code" } }`.
 |---|---|---|
 | 400 | `invalid_messages`, `bad_body`, `unsupported_parameter` | the request is not valid (the body must be a JSON object; `n` must be 1; a message role is unknown) |
 | 403 | `forbidden_origin` | without keys: the request came from a page on another site |
+| 403 | `<provider>_verification_required` | the provider asked for a human check (Qwen's browser verification). Nothing was retried; the lane is paused and the check is yours to complete |
 | 415 | `unsupported_media_type` | without keys: the body was not sent as `application/json` |
 | 401 | `invalid_api_key` | missing or wrong key |
 | 401 | `<provider>_session_expired` | the account's sign-in expired: sign in again on the Accounts page |

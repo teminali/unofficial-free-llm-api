@@ -337,7 +337,7 @@ function createChatEngine({ provider, governor = null, log = () => {}, onNotice 
         // A continued chat that failed cannot be trusted any more. If it failed for a reason that says nothing about the account, and nothing of the answer has gone to the
         // caller yet, the request is asked once more on a new chat with the whole conversation: what a request did before sessions.
         if (!out.ok && continued) {
-          const general = !out.authExpired && !out.rateLimited && !out.cancelled;
+          const general = !out.authExpired && !out.rateLimited && !out.cancelled && out.retryable !== false;
           store.drop(sess, { general });
           sess = null;
           if (general && !opened && attempt < EMPTY_ANSWER_ATTEMPTS && !(gov && !gov.checkLimit().allowed)) {
@@ -411,6 +411,11 @@ function createChatEngine({ provider, governor = null, log = () => {}, onNotice 
         log_('the sign-in was refused, ending the request cleanly');
         notice({ kind: 'expired', short: `the ${p.name} sign-in expired` });
         return fail(401, `${p.id}_session_expired`, message);
+      }
+      if (out.verificationRequired) {
+        log_('the provider requested browser verification; no retry was made');
+        notice({ kind: 'paused', short: `${p.name} requires browser verification` });
+        return fail(403, `${p.id}_verification_required`, message);
       }
       if (out.rateLimited) {
         log_('the provider\'s own limit was reached, ending the request cleanly');

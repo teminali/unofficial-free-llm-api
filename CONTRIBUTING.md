@@ -26,9 +26,9 @@ src/server.js   HTTP: /v1, the admin API, the web interface; auth and origin che
 src/engine.js   one chat completion: governor, prompt, provider call, OpenAI-shaped answer
 src/bridge.js   text only: conversation -> prompt, answer -> text and tool calls
 src/governor.js pacing, caps, cooldowns, queue
-src/providers/  deepseek, gemini, demo; chrome.js and chrome_cdp.js (the shared Chrome driver)
+src/providers/  deepseek, gemini, qwen, demo; chrome.js and chrome_cdp.js (the shared Chrome driver)
 web/            the interface (no build)
-test/           node:test files, with stand-ins for the providers
+test/           node:test files, with stand-ins for DeepSeek, Gemini and the demo provider (Qwen has none yet)
 ```
 
 ## Pull requests

@@ -38,7 +38,7 @@ Options
   --cors <origins>    allow browser apps on these origins (comma separated, or *) to call /v1 with a key
   --no-key            serve /v1 without a key (loopback only)
   --demo              add a demo provider that needs no account, to try the interface and your client
-  --providers <list>  which providers to load (default deepseek,gemini)
+  --providers <list>  which providers to load (default deepseek,gemini,qwen)
   --no-sessions       send every request on a new provider chat, as the first version did (env ULA_SESSIONS=0)
   -v, --version       print the version
   -h, --help          print this help
@@ -74,7 +74,7 @@ async function start(flags, io) {
   const port = Number(flags.port || process.env.ULA_PORT || DEFAULT_PORT);
   const host = String(flags.host || process.env.ULA_HOST || '127.0.0.1');
   const config = createConfig({ dataDir });
-  const only = flags.providers ? String(flags.providers).split(',').map((s) => s.trim()).filter(Boolean) : ['deepseek', 'gemini'];
+  const only = flags.providers ? String(flags.providers).split(',').map((s) => s.trim()).filter(Boolean) : ['deepseek', 'gemini', 'qwen'];
   if (flags.demo && !only.includes('demo')) only.push('demo');
   const verbose = Boolean(process.env.ULA_DEBUG);
   const recent = createLogBuffer(300); // what `log` prints: the providers' last lines, kept in memory only
@@ -168,7 +168,7 @@ async function doctor(flags, io) {
   if (!running) add(true, `Port ${port} is free`);
   else if (running.other) add(false, `Port ${port} is used by something that is not this program`, `Start with another port: --port ${port + 1}`);
   else add(true, `A copy (version ${running.version}) is running on port ${port}`);
-  const { providers } = createProviders({ dataDir, config, log: () => {}, only: ['deepseek', 'gemini'], sessions: !flags['no-sessions'] });
+  const { providers } = createProviders({ dataDir, config, log: () => {}, only: ['deepseek', 'gemini', 'qwen'], sessions: !flags['no-sessions'] });
   for (const p of providers) {
     try {
       const st = await p.status();
@@ -239,7 +239,8 @@ async function selftest(flags, io) {
   const continued = (after.continued || 0) - ((before && before.continued) || 0);
   const started = (after.started || 0) + (after.diverged || 0) - (((before && before.started) || 0) + ((before && before.diverged) || 0));
   io.out(`\nChats started: ${started}, continued: ${continued}.\n`);
-  if (continued === turns - 1 && started === 1) { io.out(`The conversation stayed in one chat. Open ${owner === 'deepseek' ? 'chat.deepseek.com' : 'gemini.google.com'}: its history should show one new chat with ${turns} questions in it.\n`); return 0; }
+  const chatSite = { deepseek: 'chat.deepseek.com', gemini: 'gemini.google.com', qwen: 'chat.qwen.ai' }[owner] || 'the provider website';
+  if (continued === turns - 1 && started === 1) { io.out(`The conversation stayed in one chat. Open ${chatSite}: its history should show one new chat with ${turns} questions in it.\n`); return 0; }
   io.out('It did not stay in one chat. Start the server with ULA_DEBUG=1 and send the lines that mention "chat" to the issue tracker (no prompts are in them).\n');
   return 1;
 }

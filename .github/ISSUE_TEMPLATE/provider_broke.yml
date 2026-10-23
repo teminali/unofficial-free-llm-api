@@ -1,5 +1,5 @@
 name: A provider stopped working
-description: DeepSeek or Gemini used to work and now does not
+description: DeepSeek, Gemini or Qwen used to work and now does not
 labels: [provider-broke]
 body:
   - type: markdown
@@ -11,7 +11,7 @@ body:
     id: provider
     attributes:
       label: Provider
-      options: [DeepSeek, Gemini, Both]
+      options: [DeepSeek, Gemini, Qwen, More than one]
     validations:
       required: true
   - type: textarea
@@ -31,4 +31,4 @@ body:
     id: version
     attributes:
       label: Version, Node.js and Chrome versions
-      placeholder: 0.2.0, Node 22.12, Chrome 130
+      placeholder: 0.3.0, Node 22.12, Chrome 130

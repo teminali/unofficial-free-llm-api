@@ -17,7 +17,7 @@ body:
     id: version
     attributes:
       label: Version and Node.js version
-      placeholder: 0.2.0, Node 22.12
+      placeholder: 0.3.0, Node 22.12
   - type: markdown
     attributes:
       value: Never paste tokens, cookies, API keys or the contents of your data folder.

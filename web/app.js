@@ -316,7 +316,7 @@
     for (const id of viewIds.slice(1)) views[id] = h('section', { class: 'view', 'data-view': id });
     const main = h('main', { id: 'main', tabindex: '-1' }, views.playground.el, viewIds.slice(1).map((id) => views[id]));
     const foot = h('footer', { class: 'foot' },
-      h('p', { class: 'foot-text', text: 'Unofficial: not made, endorsed or supported by DeepSeek or Google. It uses your own sessions and can get an account slowed down, muted or signed out.' }),
+      h('p', { class: 'foot-text', text: 'Unofficial: not made, endorsed or supported by DeepSeek, Google or Qwen. It uses your own sessions and can get an account slowed down, muted or signed out.' }),
       h('p', { class: 'foot-links' },
         h('a', { href: `${REPO}/blob/HEAD/DISCLAIMER.md`, target: '_blank', rel: 'noopener noreferrer', text: 'Read the disclaimer' }),
         h('a', { class: 'support', href: `${REPO}/blob/HEAD/DONATE.md`, target: '_blank', rel: 'noopener noreferrer', title: 'This project is free. If it helped, say so.' }, icon('heart', 14), 'Support the project')));
@@ -567,7 +567,7 @@
       const tried = st.requests.length > 0 || firstRequestDone();
       const linkedNames = st.providers.filter((p) => p.linked && !p.expired).map((p) => p.name);
       return [
-        { id: 'link', done: hasModels, title: 'Link an account', text: hasModels ? `Linked: ${linkedNames.join(', ') || 'a provider'}.` : 'Sign in to DeepSeek or Gemini once, in a Chrome window that opens for you. Nothing here goes to a server of ours.', action: hasModels ? null : btn('Link an account', { class: 'primary', onclick: () => show('accounts', { focus: true }) }, 'link') },
+        { id: 'link', done: hasModels, title: 'Link an account', text: hasModels ? `Linked: ${linkedNames.join(', ') || 'a provider'}.` : 'Sign in to DeepSeek, Gemini or Qwen once, in a Chrome window that opens for you. Nothing here goes to a server of ours.', action: hasModels ? null : btn('Link an account', { class: 'primary', onclick: () => show('accounts', { focus: true }) }, 'link') },
         { id: 'key', done: st.keys.length > 0, title: 'Make or copy an API key', text: st.keys.length ? `${plural(st.keys.length, 'key')} made. Show it again any time on the API page.` : 'Your own code needs a key to call this server. Make one, then copy it.', action: st.keys.length ? btn('Go to API keys', { onclick: () => show('api', { focus: true }) }, 'key') : btn('Go to API keys', { class: hasModels ? 'primary' : '', onclick: () => show('api', { focus: true }) }, 'key') },
         { id: 'try', done: tried, title: 'Try it', text: tried ? 'A request has gone through.' : 'Send a message here, or connect a tool such as Lens Code or Cline.',
           action: h('div', { class: 'row' }, btn('Say hello', { class: hasModels && !tried ? 'primary' : '', disabled: !hasModels, onclick: () => { input.value = 'Say hello in five words.'; autosize(); input.focus(); } }, 'chat'), btn('Connect a tool', { onclick: () => show('api', { focus: true }) }, 'code')) }
@@ -898,7 +898,8 @@
 
   const HOW = {
     deepseek: 'Opens a Chrome window so you can sign in to chat.deepseek.com yourself. The session is kept on this computer and used for each request. Answers come from the same models the website uses.',
-    gemini: 'Opens Chrome on a private profile so you can sign in to gemini.google.com yourself. Chat then runs in that Chrome, in the background. Your requests show up in your Gemini activity like any chat you typed.'
+    gemini: 'Opens Chrome on a private profile so you can sign in to gemini.google.com yourself. Chat then runs in that Chrome, in the background. Your requests show up in your Gemini activity like any chat you typed.',
+    qwen: 'Opens Chrome with a dedicated profile so you can sign in to chat.qwen.ai yourself. Chat requests use Qwen\'s normal message box in that browser, which stays open while the bridge runs. Complete any verification checks yourself. This is unofficial, not Qwen\'s official API.'
   };
 
   function ui(id) { return (S.ui[id] = S.ui[id] || {}); }
@@ -989,7 +990,9 @@
         h('label', { class: 'switch' }, sw, h('span', { class: 'track' }), h('span', { class: 'switch-text' }, h('strong', { text: 'One chat per conversation' }), h('span', { class: `status-line ${s.enabled ? 'on' : 'off'}`, text: sessionLine(s) }))),
         h('span', { class: 'hint', id: `sessions-hint-${p.id}`, text: stopped
           ? 'It switched itself off so that nothing is spent on a setting that does not work. Switch it on to try again.'
-          : 'A conversation stays in one chat on the provider\'s side instead of a new chat per message. New, and so far only run against stand-ins, not a real account. It switches itself off if continuing a chat fails twice in a row.' })));
+          : p.id === 'qwen'
+            ? 'Keeps one Qwen chat for each API conversation. Turning this off removes bridge-created chats; your other chats are not touched.'
+            : 'A conversation stays in one chat on the provider\'s side instead of a new chat per message. New, and so far only run against stand-ins, not a real account. It switches itself off if continuing a chat fails twice in a row.' })));
     }
     let tokenBox = null;
     if (caps.token && !demo) {
@@ -1000,27 +1003,30 @@
           token,
           btn('Use this token', { class: 'sm', onclick: () => act(p.id, async () => { const r = await admin('POST', `/providers/${p.id}/token`, { token: token.value, consentAcknowledged: true }); if (r.error) throw new Error(r.error); }) })));
     }
-    // Only Gemini can read its model picker again (POST /_/providers/gemini/refresh-models). The provider's capabilities do not say so, so the id decides.
+    // Gemini predates the refreshModels capability; keep its picker flow alongside account model-list refreshes.
     let readAgain = null;
-    if (p.id === 'gemini') {
+    if (p.id === 'gemini' || caps.refreshModels) {
+      const gemini = p.id === 'gemini';
       const off = Boolean(p.linking) || !p.linked || Boolean(p.expired);
       const reread = () => {
         u.reading = true;
         u.read = null;
-        announce('Reading the model picker');
+        announce(gemini ? 'Reading the model picker' : `Reading ${p.name} models`);
         return act(p.id, async () => {
           try {
             const r = await admin('POST', `/providers/${p.id}/refresh-models`, {});
-            u.read = r.refreshed ? { ok: true, text: `Models read again: ${plural((r.models || []).length, 'row')}` } : { ok: false, text: 'Could not read the picker; the list stays as it was' };
+            u.read = r.refreshed
+              ? { ok: true, text: gemini ? `Models read again: ${plural((r.models || []).length, 'row')}` : `${p.name} account models read again: ${plural((r.models || []).length, 'model')}` }
+              : { ok: false, text: gemini ? 'Could not read the picker; the list stays as it was' : `Could not read your ${p.name} account's model list; the list stays as it was` };
             announce(u.read.text);
           } finally { u.reading = false; }
         });
       };
       readAgain = h('div', { class: 'stack-sm' },
-        h('div', { class: 'row' }, btn(u.reading ? 'Reading the picker' : 'Read models again', { id: `reread-${p.id}`, class: 'sm', disabled: u.busy || off, 'aria-busy': u.reading ? 'true' : undefined, onclick: reread }, 'retry')),
-        u.reading ? h('p', { class: 'small muted', role: 'status', text: 'Opening Gemini\'s page to read the picker. This can take up to 20 seconds.' })
+        h('div', { class: 'row' }, btn(u.reading ? (gemini ? 'Reading the picker' : `Reading ${p.name} models`) : 'Read models again', { id: `reread-${p.id}`, class: 'sm', disabled: u.busy || off, 'aria-busy': u.reading ? 'true' : undefined, onclick: reread }, 'retry')),
+        u.reading ? h('p', { class: 'small muted', role: 'status', text: gemini ? 'Opening Gemini\'s page to read the picker. This can take up to 20 seconds.' : `Reading the model list available to your ${p.name} account.` })
           : u.read ? h('div', { class: u.read.ok ? 'small muted' : 'notice warn', role: 'status', text: u.read.text })
-            : h('span', { class: 'hint', text: off ? 'Works once the account is linked and its sign-in is finished.' : 'Reads the models from your Gemini account\'s own picker. It does this by itself when the list is 15 minutes old.' }));
+            : h('span', { class: 'hint', text: off ? 'Works once the account is linked and its sign-in is finished.' : gemini ? 'Reads the models from your Gemini account\'s own picker. It does this by itself when the list is 15 minutes old.' : `Reads the model list available to your ${p.name} account using the saved sign-in.` }));
     }
     return h('article', { class: 'card provider stack' },
       h('div', { class: 'row between' }, h('h2', { class: 'h3', text: p.name }), chip(status[0], status[1])),

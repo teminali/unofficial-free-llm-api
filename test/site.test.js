@@ -109,7 +109,7 @@ describe('notice before command', () => {
       assert.ok(footer.includes(`href="${u}"`), `footer lacks ${u}`);
     }
     assert.match(textOf(footer), /MIT/);
-    assert.match(textOf(footer), /Not affiliated with DeepSeek or Google/);
+    assert.match(textOf(footer), /Not affiliated with DeepSeek, Google or Alibaba/);
   });
 });
 
@@ -298,7 +298,7 @@ describe('document basics', () => {
   });
 
   test('provider names appear only in sentences: not in the title, the h1, the styles, the script or the favicon', () => {
-    const re = /deepseek|google|gemini/i;
+    const re = /deepseek|google|gemini|qwen/i;
     for (const page of PAGES) {
       const html = read(page);
       assert.ok(!re.test(html.match(/<title>([^<]*)<\/title>/)[1]), `${page} title`);

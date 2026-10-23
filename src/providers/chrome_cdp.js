@@ -278,6 +278,161 @@ function createPage({ session, targetId, base }) {
       };
     },
 
+    // Stopping observation does not cancel the browser's request.
+    async watchResponse({ url, method = 'POST', signal, onRequest = () => {} }) {
+      const expected = new URL(url);
+      const limit = 8 * 1024 * 1024;
+      let requestId = null;
+      let actualUrl;
+      let postData = null;
+      let meta = null;
+      let settled = false;
+      let ended = false;
+      let disposed = false;
+      let controller = null;
+      let initialized = false;
+      let finished = false;
+      let totalBytes = 0;
+      let pending = [];
+      let stopListening = () => {};
+      let resolveResponse;
+      let rejectResponse;
+      const response = new Promise((resolve, reject) => { resolveResponse = resolve; rejectResponse = reject; });
+      // A caller may stop before it starts awaiting the response.
+      response.catch(() => {});
+      const dispose = () => {
+        if (disposed) return;
+        disposed = true;
+        stopListening();
+        if (signal) signal.removeEventListener('abort', onAbort);
+        pending = [];
+      };
+      const end = () => {
+        if (ended) return;
+        ended = true;
+        if (controller) { try { controller.close(); } catch (_) { /* already errored */ } }
+        dispose();
+      };
+      const fail = (err) => {
+        if (ended) return;
+        ended = true;
+        if (!settled) { settled = true; rejectResponse(err); }
+        if (controller) { try { controller.error(err); } catch (_) { /* already closed */ } }
+        dispose();
+      };
+      const tooLarge = () => new Error('Chrome response exceeded the 8 MiB observation limit.');
+      const bytesOf = (result) => {
+        if (result.base64Encoded) return decode(result.body);
+        const bytes = new TextEncoder().encode(result.body || '');
+        if (bytes.byteLength > limit - totalBytes) throw tooLarge();
+        totalBytes += bytes.byteLength;
+        return bytes.byteLength ? bytes : null;
+      };
+      const decode = (data) => {
+        if (!data) return null;
+        const length = Buffer.byteLength(data, 'base64');
+        if (length > limit - totalBytes) throw tooLarge();
+        totalBytes += length;
+        const bytes = Uint8Array.from(Buffer.from(data, 'base64'));
+        return bytes.byteLength ? bytes : null;
+      };
+      const enqueue = (bytes) => {
+        if (!bytes || !controller) return;
+        if (bytes.byteLength > controller.desiredSize) throw tooLarge();
+        controller.enqueue(bytes);
+      };
+      const onAbort = () => fail(new Error('Chrome response observation aborted.'));
+      stopListening = session.on((event, params) => {
+        if (ended) return;
+        try {
+          if (event === '__closed') { fail(new Error('Chrome closed the tab while observing a response.')); return; }
+          if (event === 'Network.requestWillBeSent') {
+            if (requestId === null) {
+              if (!params.request || params.request.method !== method) return;
+              let candidate;
+              try { candidate = new URL(params.request.url); } catch (_) { return; }
+              if (candidate.origin !== expected.origin || candidate.pathname !== expected.pathname) return;
+              requestId = params.requestId;
+              actualUrl = params.request.url;
+              postData = typeof params.request.postData === 'string' && params.request.postData.length <= 4 * 1024 * 1024 ? params.request.postData : null;
+              onRequest({ url: actualUrl, postData, headers: params.request.headers });
+            }
+            if (params.requestId === requestId && params.redirectResponse) fail(new Error('The observed Chrome request redirected.'));
+            return;
+          }
+          if (requestId === null || params.requestId !== requestId) return;
+          if (event === 'Network.loadingFailed') { fail(new Error('The observed Chrome request failed.')); return; }
+          if (event === 'Network.responseReceived' && !meta) {
+            const headers = new Headers();
+            const received = params.response.headers || {};
+            for (const name of Object.keys(received)) {
+              const key = name.toLowerCase();
+              if (key === 'content-type' || key === 'retry-after') headers.set(key, received[name]);
+            }
+            meta = { status: params.response.status, headers };
+            if ([204, 205, 304].includes(meta.status)) {
+              settled = true;
+              resolveResponse({ response: new Response(null, meta), url: actualUrl, postData });
+              end();
+              return;
+            }
+            const body = new ReadableStream({
+              type: 'bytes',
+              start: (value) => { controller = value; },
+              cancel: () => fail(new Error('Chrome response body cancelled.'))
+            }, { highWaterMark: limit });
+            settled = true;
+            resolveResponse({ response: new Response(body, meta), url: actualUrl, postData });
+            session.send('Network.streamResourceContent', { requestId }).then((result) => {
+              if (ended) return;
+              try {
+                // Events can precede this reply, but bufferedData always precedes their bytes.
+                enqueue(decode(result.bufferedData));
+                initialized = true;
+                for (const bytes of pending) enqueue(bytes);
+                pending = [];
+                if (finished) end();
+              } catch (err) { fail(err); }
+            }, () => {
+              // A response that already ended cannot be streamed, but its body can still be read once.
+              if (ended) return;
+              if (!finished) { fail(new Error('Chrome could not stream the observed response.')); return; }
+              session.send('Network.getResponseBody', { requestId }).then((result) => {
+                if (ended) return;
+                try {
+                  initialized = true;
+                  enqueue(bytesOf(result));
+                  end();
+                } catch (err) { fail(err); }
+              }, () => fail(new Error('Chrome could not read the observed response.')));
+            });
+            return;
+          }
+          if (event === 'Network.dataReceived' && params.data) {
+            if (!initialized) {
+              const bytes = decode(params.data);
+              if (bytes) pending.push(bytes);
+            } else enqueue(decode(params.data));
+            return;
+          }
+          if (event !== 'Network.loadingFinished') return;
+          if (!meta) { fail(new Error('Chrome finished the request without response metadata.')); return; }
+          finished = true;
+          if (initialized) end();
+        } catch (err) { fail(err); }
+      });
+      if (signal) {
+        signal.addEventListener('abort', onAbort, { once: true });
+        if (signal.aborted) onAbort();
+      }
+      if (closed) fail(new Error('Chrome has already closed the tab.'));
+      if (!ended) {
+        await session.send('Network.enable', { maxPostDataSize: 4 * 1024 * 1024 }).catch(() => fail(new Error('Chrome could not enable response observation.')));
+      }
+      if (ended) await response;
+      return { response, stop: () => fail(new Error('Chrome response observer stopped.')) };
+    },
+
     keyboard: {
       insertText: (text) => session.send('Input.insertText', { text: String(text) }),
       async press(key) {
