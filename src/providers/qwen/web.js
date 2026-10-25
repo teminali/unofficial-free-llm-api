@@ -278,7 +278,15 @@ function createQwenWeb({ dataDir, account, governor, log = () => {} }) {
             verification: Boolean(verify?.getClientRects().length),
             path: location.pathname, timeOrigin: performance.timeOrigin,
             ready: Boolean(!document.getElementById('splash-screen') && input && !input.disabled && !input.readOnly && input.getClientRects().length && picker?.getClientRects().length),
-            selecting: picker?.getAttribute('aria-expanded') !== 'false' || [...document.querySelectorAll('[role="listbox"]')].some((e) => e.checkVisibility({ visibilityProperty: true })),
+            // Qwen keeps its model menu mounted after a choice with no aria-expanded on the picker and the listbox still in the
+            // document, so only a listbox that is actually on screen and can take a click counts as open. Reading a missing
+            // attribute as "open" left selection stuck on a menu that was already closed.
+            selecting: [...document.querySelectorAll('[role="listbox"]')].some((e) => {
+              if (e.closest('[aria-hidden="true"]')) return false;
+              const r = e.getBoundingClientRect();
+              const style = getComputedStyle(e);
+              return r.width > 0 && r.height > 0 && r.right > 0 && r.left < innerWidth && r.bottom > 0 && r.top < innerHeight && style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0' && style.pointerEvents !== 'none';
+            }),
             empty: input ? input.value === '' : null,
             busy: Boolean(document.querySelector('button[aria-label="Stop"]')?.checkVisibility({ visibilityProperty: true })),
             send: (() => { const b = document.querySelector('button[aria-label="Send"]'); return Boolean(b && !b.disabled); })(),
@@ -297,12 +305,33 @@ function createQwenWeb({ dataDir, account, governor, log = () => {} }) {
         }
         throw new Error(message);
       };
+      // A person closes Qwen's model menu with Escape or by clicking the picker again; either is used before anything is typed.
+      const closeModelMenu = async () => {
+        if (!(await state()).selecting) return true;
+        await page.keyboard.press('Escape');
+        for (const end = Date.now() + 1200; Date.now() < end;) {
+          if (!(await state()).selecting) return true;
+          await delay(150, undefined, { signal: combined });
+        }
+        const picker = await page.$('[aria-label="Select Model"]');
+        if (picker) await picker.mouseClick();
+        for (const end = Date.now() + 1200; Date.now() < end;) {
+          if (!(await state()).selecting) return true;
+          await delay(150, undefined, { signal: combined });
+        }
+        return false;
+      };
       const selectModel = async (name) => {
         for (const until = Date.now() + 15000; Date.now() < until;) {
           combined.throwIfAborted();
           const current = await state();
           if (!current.ready) { await delay(250, undefined, { signal: combined }); continue; }
-          if (!current.selecting && current.model === name) return;
+          // Qwen can already hold the requested model when the lane reaches it (a new chat keeps the last choice), and a click on
+          // its option can leave the menu mounted; the label it shows is the answer, not whether the menu happens to be open.
+          if (current.model === name) {
+            if (!(await closeModelMenu())) log('qwen: the model menu stayed open after the model was already set; continuing');
+            return;
+          }
           if (!current.selecting) {
             const picker = await page.$('[aria-label="Select Model"]');
             if (!picker) { await delay(250, undefined, { signal: combined }); continue; }
@@ -320,7 +349,10 @@ function createQwenWeb({ dataDir, account, governor, log = () => {} }) {
           if (clicked) {
             for (const end = Date.now() + 4000; Date.now() < end;) {
               const selected = await state();
-              if (selected.ready && !selected.selecting && selected.model === name) return;
+              if (selected.ready && selected.model === name) {
+                if (!(await closeModelMenu())) log('qwen: the model menu stayed open after selecting; continuing');
+                return;
+              }
               await delay(200, undefined, { signal: combined });
             }
           }
@@ -401,12 +433,19 @@ function createQwenWeb({ dataDir, account, governor, log = () => {} }) {
           try { user = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))).id; } catch (_) {}
           const send = document.querySelector('button[aria-label="Send"]');
           const picker = document.querySelector('[aria-label="Select Model"]');
-          return location.origin === 'https://chat.qwen.ai' && user === owner && performance.timeOrigin === timeOrigin && location.pathname === target && !document.getElementById('splash-screen') && document.querySelector('textarea.message-input-textarea')?.value === prompt && picker?.innerText.trim() === model && picker.getAttribute('aria-expanded') === 'false' && ![...document.querySelectorAll('[role="listbox"]')].some((e) => e.checkVisibility({ visibilityProperty: true })) && send && !send.disabled;
+          const menu = [...document.querySelectorAll('[role="listbox"]')].some((e) => {
+            if (e.closest('[aria-hidden="true"]')) return false;
+            const r = e.getBoundingClientRect();
+            const style = getComputedStyle(e);
+            return r.width > 0 && r.height > 0 && r.right > 0 && r.left < innerWidth && r.bottom > 0 && r.top < innerHeight && style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0' && style.pointerEvents !== 'none';
+          });
+          return location.origin === 'https://chat.qwen.ai' && user === owner && performance.timeOrigin === timeOrigin && location.pathname === target && !document.getElementById('splash-screen') && document.querySelector('textarea.message-input-textarea')?.value === prompt && picker?.innerText.trim() === model && !menu && send && !send.disabled;
         }, prompt, entry.name, target, accountId(session.token), documentTimeOrigin);
         if (!prepared) {
           const now = await state();
           if (now.path !== target) throw new Error('Qwen left the requested conversation. No request was sent.');
           if (now.empty) throw new Error('Qwen cleared the message before sending. No request was sent.');
+          if (now.selecting) throw new Error('Qwen kept its model menu open. No request was sent.');
           if (!now.send) throw new Error('Qwen did not keep its Send button enabled. No request was sent.');
           if (now.model !== entry.name) throw new Error(`Qwen switched its model back to ${now.model || 'an unknown one'}. No request was sent.`);
           throw new Error('Qwen could not prepare this message. No request was sent.');

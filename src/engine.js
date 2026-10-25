@@ -52,7 +52,7 @@ function counts(result) { return !result.authExpired && (result.cancelled ? resu
 
 /**
  * createChatEngine({ provider, governor, log, onNotice, sessions })
- * `provider`: { id, name, web: { completeOnce({ prompt, thinking, signal, model, thinkingLevel, onDelta, keep, remote }) }, bridge(tools), formatCall(call), continueHint,
+ * `provider`: { id, name, web: { images?, completeOnce({ prompt, images, thinking, signal, model, thinkingLevel, onDelta, keep, remote }) }, bridge(tools), formatCall(call), continueHint,
  *   noToolsHint, repeatLimit, hold: 'marker' | 'leading-json', timeoutMs }.
  *   chat(res, body, entry, meta) -> Promise<{ status, ... }>   `entry` is the chosen model: { id, thinking, escalate, ref }; `meta.sessionTag` names a session
  *
@@ -103,7 +103,9 @@ function createChatEngine({ provider, governor = null, log = () => {}, onNotice 
     const offerThink = canThink && task.left > 0;
     const toolsAll = offerThink ? tools.concat([THINK_TOOL]) : tools;
     const conversation = () => (task && task.entries.length ? B.withThoughts(messages, task.entries) : messages);
-    const promptOptions = { bridge: p.bridge, noToolsHint: p.noToolsHint, formatCall: p.formatCall, continueHint: p.continueHint, jsonMode: body.response_format };
+    // A provider whose web client takes pictures (`web.images`) is given the pictures of the request; any other one is told in the prompt that a picture was left out.
+    const pics = web.images === true ? B.createPictures() : null;
+    const promptOptions = { bridge: p.bridge, noToolsHint: p.noToolsHint, formatCall: p.formatCall, continueHint: p.continueHint, jsonMode: body.response_format, images: pics };
     const promptFor = () => B.buildPrompt(conversation(), toolsAll, promptOptions);
     const basePrompt0 = promptFor();
     let basePrompt = basePrompt0;
@@ -266,9 +268,10 @@ function createChatEngine({ provider, governor = null, log = () => {}, onNotice 
     const deliberate = async (question) => {
       if (gov && !gov.checkLimit().allowed) return { answer: NO_THOUGHT };
       const asked = Date.now();
-      const context = B.buildPrompt(conversation().filter((m) => m && m.role !== 'system'), [], { closing: thinkHint(question), formatCall: p.formatCall });
+      const context = B.buildPrompt(conversation().filter((m) => m && m.role !== 'system'), [], { closing: thinkHint(question), formatCall: p.formatCall, images: pics });
       const r = await web.completeOnce({
         prompt: context,
+        images: pics ? pics.inPrompt(context) : undefined,
         thinking: true,
         signal: controller.signal,
         model: entry.ref || entry.id,
@@ -319,6 +322,9 @@ function createChatEngine({ provider, governor = null, log = () => {}, onNotice 
         const continued = Boolean(sess);
         out = await web.completeOnce({
           prompt,
+          images: pics ? pics.inPrompt(prompt) : undefined,
+          tools: toolsAll,
+          temperature: body.temperature,
           thinking: repairing ? false : thinkingMode,
           signal: controller.signal,
           model: entry.ref || entry.id,
@@ -431,6 +437,8 @@ function createChatEngine({ provider, governor = null, log = () => {}, onNotice 
 
     let answerText = out.text;
     if (lim) { const cut = L.cutText(answerText, { maxChars: L.maxChars(body), stops: L.stopList(body.stop) }); answerText = cut.text; limitReason = cut.finish; }
+    // A native provider that reached its own output ceiling says so; the caller sees a length stop rather than a complete answer.
+    if (out.truncated && !limitReason) limitReason = 'length';
     const parsed = B.parseAnswer(answerText, toolsAll);
     const calls = parsed.calls.filter((c) => c.name !== 'think').map((call) => ({ ...call, id: `call_${crypto.randomBytes(8).toString('hex')}` }));
     log_(`${messages.length} messages, ${tools.length} tools, ${out.text.length} chars, ${calls.length} calls, ${Date.now() - started}ms`);

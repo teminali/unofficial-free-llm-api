@@ -5,6 +5,7 @@
  *   GET  /api/v0/users/current      the profile (an example address that must only ever be seen masked)
  *   POST /api/v0/chat_session/create, /delete
  *   POST /api/v0/chat/create_pow_challenge   a challenge DeepSeekHashV1 can answer
+ *   POST /api/v0/file/upload_file, GET /api/v0/file/fetch_files   an attached file: a proof-of-work for its path, a multipart upload, then its state (state.uploads, uploadState)
  *   POST /api/v0/chat/completion    checks the token, the cookie and the proof-of-work, then streams events in the shapes seen from the real site
  *
  * `state.reply(prompt, { thinking })` returns what the chat says: a string, or { text, thinking }. Other switches: muted, notice ('limit'), authFail, cut,
@@ -49,13 +50,17 @@ function startFakeDeepSeek() {
     drop: {},
     dropMidStream: 0,
     deleteStatus: 0,
-    algorithm: 'DeepSeekHashV1'
+    algorithm: 'DeepSeekHashV1',
+    uploads: [], // every file the stand-in took: { name, mime, size, sha, target (the proof-of-work path it was solved for) }
+    uploadState: 'SUCCESS', // what the site says of a file once it has read it: SUCCESS, CONTENT_EMPTY, FAILED, or 'refuse' (the upload itself is answered with an error)
+    parsingPolls: 1, // how many times fetch_files says PARSING before the state above
+    polls: {}
   };
   const server = http.createServer((req, res) => {
     const body = (done) => { let text = ''; req.on('data', (c) => { text += c; }); req.on('end', () => { let json = {}; try { json = JSON.parse(text || '{}'); } catch (_) { /* keep what was there */ } done(json); }); };
     const json = (code, obj) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(obj)); };
     const authorized = () => req.headers.authorization === `Bearer ${state.token}` && !state.authFail;
-    if (req.method === 'GET' && req.url === '/state') return json(200, { completions: state.completions.map(({ prompt, ...rest }) => ({ ...rest, promptHead: prompt.slice(0, 200) })), created: state.created, deleted: state.deleted, powFailures: state.powFailures });
+    if (req.method === 'GET' && req.url === '/state') return json(200, { completions: state.completions.map(({ prompt, ...rest }) => ({ ...rest, promptHead: prompt.slice(0, 200) })), created: state.created, deleted: state.deleted, powFailures: state.powFailures, uploads: state.uploads });
     if (req.method === 'GET' && (req.url === '/' || req.url.startsWith('/?'))) {
       const hidden = /HeadlessChrome/.test(String(req.headers['user-agent'] || ''));
       state.pageLoads.push({ hidden });
@@ -77,6 +82,13 @@ function startFakeDeepSeek() {
       if (!authorized()) return json(401, { code: 40003, msg: 'token' });
       return json(200, { code: 0, msg: '', data: { biz_code: 0, biz_msg: '', biz_data: { id: 'standin-user', email: 'owner@example.com', mobile_number: '', area_code: '' } } });
     }
+    if (req.method === 'GET' && req.url.startsWith('/api/v0/file/fetch_files')) {
+      if (!authorized()) return json(401, { code: 40003, msg: 'token' });
+      const id = new URL(req.url, 'http://x').searchParams.get('file_ids');
+      state.polls[id] = (state.polls[id] || 0) + 1;
+      const status = state.polls[id] <= state.parsingPolls ? 'PARSING' : state.uploadState;
+      return json(200, { code: 0, msg: '', data: { biz_code: 0, biz_msg: '', biz_data: { files: [{ id, status, file_name: 'x', file_size: 1 }] } } });
+    }
     if (req.method !== 'POST') return json(404, { code: 404 });
     state.requests[req.url] = (state.requests[req.url] || 0) + 1;
     if (state.drop[req.url] > 0) { state.drop[req.url] -= 1; return req.socket.destroy(); } // the network went away: no answer at all
@@ -84,13 +96,40 @@ function startFakeDeepSeek() {
     if (req.url === '/api/v0/chat_session/create') { state.sessions += 1; const id = `standin-${state.sessions}`; state.created.push(id); state.chats.set(id, { last: 0 }); return json(200, { code: 0, msg: '', data: { biz_data: state.sessions % 2 ? { id } : { chat_session: { id } } } }); }
     if (req.url === '/api/v0/chat_session/delete') return body((b) => { if (state.deleteStatus) return json(state.deleteStatus, { code: state.deleteStatus, msg: 'stand-in failure' }); state.deleted.push(b.chat_session_id); json(200, { code: 0, msg: '', data: {} }); });
     if (req.url === '/api/v0/chat/create_pow_challenge') {
-      const salt = crypto.randomBytes(6).toString('hex');
-      const expire_at = Math.floor(Date.now() / 1000) + 3600;
-      const answer = Math.floor(Math.random() * 400) + 30;
-      const challenge = deepseekHash(Buffer.from(`${salt}_${expire_at}_${answer}`, 'utf8'));
-      const signature = crypto.randomBytes(8).toString('hex');
-      state.challenges.set(signature, { challenge, salt, expire_at, answer });
-      return json(200, { code: 0, msg: '', data: { biz_data: { challenge: { algorithm: state.algorithm, challenge, salt, expire_at, difficulty: 1000, signature, target_path: '/api/v0/chat/completion' } } } });
+      return body((b) => {
+        const target = String(b.target_path || '/api/v0/chat/completion');
+        const salt = crypto.randomBytes(6).toString('hex');
+        const expire_at = Math.floor(Date.now() / 1000) + 3600;
+        const answer = Math.floor(Math.random() * 400) + 30;
+        const challenge = deepseekHash(Buffer.from(`${salt}_${expire_at}_${answer}`, 'utf8'));
+        const signature = crypto.randomBytes(8).toString('hex');
+        state.challenges.set(signature, { challenge, salt, expire_at, answer, target });
+        json(200, { code: 0, msg: '', data: { biz_data: { challenge: { algorithm: state.algorithm, challenge, salt, expire_at, difficulty: 1000, signature, target_path: target } } } });
+      });
+    }
+    if (req.url === '/api/v0/file/upload_file') {
+      const chunks = [];
+      req.on('data', (c) => chunks.push(c));
+      req.on('end', () => {
+        let pow = null;
+        try { pow = JSON.parse(Buffer.from(String(req.headers['x-ds-pow-response'] || ''), 'base64').toString('utf8')); } catch (_) { pow = null; }
+        const known = pow && state.challenges.get(pow.signature);
+        const solved = known && known.target === '/api/v0/file/upload_file' && deepseekHash(Buffer.from(`${known.salt}_${known.expire_at}_${pow.answer}`, 'utf8')) === known.challenge;
+        if (!solved) { state.powFailures += 1; return json(400, { code: 40300, msg: 'MISSING_HEADER' }); }
+        state.challenges.delete(pow.signature);
+        if (state.uploadState === 'refuse') return json(400, { code: 40500, msg: 'file type not supported' }); // a refused file is not a refused login
+        const raw = Buffer.concat(chunks);
+        const text = raw.toString('latin1');
+        const head = /name="file"; filename="([^"]*)"\r\nContent-Type: ([^\r]*)\r\n\r\n/.exec(text);
+        if (!head) return json(400, { code: 40501, msg: 'no file' });
+        const start = head.index + head[0].length;
+        const end = raw.lastIndexOf(Buffer.from(`\r\n--${/boundary=(.+)$/.exec(String(req.headers['content-type'] || ''))[1]}`));
+        const bytes = raw.subarray(start, end);
+        const id = `file-${state.uploads.length + 1}`;
+        state.uploads.push({ id, name: head[1], mime: head[2], size: bytes.length, sha: crypto.createHash('sha256').update(bytes).digest('hex'), target: known.target });
+        json(200, { code: 0, msg: '', data: { biz_code: 0, biz_msg: '', biz_data: { files: [{ id, status: 'PENDING', file_name: head[1], file_size: bytes.length }] } } });
+      });
+      return undefined;
     }
     if (req.url === '/api/v0/chat/completion') {
       return body(async (b) => {
@@ -109,7 +148,7 @@ function startFakeDeepSeek() {
         if (parent === null && chat.last !== 0) return json(200, { code: 40400, msg: 'parent message required', data: null });
         const respId = chat.last + 2;
         chat.last = respId;
-        state.completions.push({ thinking, search: b.search_enabled, session: b.chat_session_id, parent, respId, cookie: String(req.headers.cookie || ''), prompt, ua: req.headers['user-agent'] });
+        state.completions.push({ thinking, search: b.search_enabled, files: b.ref_file_ids, session: b.chat_session_id, parent, respId, cookie: String(req.headers.cookie || ''), prompt, ua: req.headers['user-agent'] });
         // DeepSeek muting the account, as seen in a real log: a successful HTTP answer whose body says the user is muted.
         if (state.muted) return json(200, { code: 0, msg: '', data: { biz_code: 5, biz_msg: 'user is muted', biz_data: { is_muted: 1, mute_until: (Date.now() + 72 * 3600 * 1000) / 1000 } } });
         res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' });

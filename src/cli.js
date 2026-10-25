@@ -38,7 +38,7 @@ Options
   --cors <origins>    allow browser apps on these origins (comma separated, or *) to call /v1 with a key
   --no-key            serve /v1 without a key (loopback only)
   --demo              add a demo provider that needs no account, to try the interface and your client
-  --providers <list>  which providers to load (default deepseek,gemini,qwen)
+  --providers <list>  which providers to load (default deepseek,gemini,qwen,bike4mind)
   --no-sessions       send every request on a new provider chat, as the first version did (env ULA_SESSIONS=0)
   -v, --version       print the version
   -h, --help          print this help
@@ -74,7 +74,7 @@ async function start(flags, io) {
   const port = Number(flags.port || process.env.ULA_PORT || DEFAULT_PORT);
   const host = String(flags.host || process.env.ULA_HOST || '127.0.0.1');
   const config = createConfig({ dataDir });
-  const only = flags.providers ? String(flags.providers).split(',').map((s) => s.trim()).filter(Boolean) : ['deepseek', 'gemini', 'qwen'];
+  const only = flags.providers ? String(flags.providers).split(',').map((s) => s.trim()).filter(Boolean) : ['deepseek', 'gemini', 'qwen', 'bike4mind'];
   if (flags.demo && !only.includes('demo')) only.push('demo');
   const verbose = Boolean(process.env.ULA_DEBUG);
   const recent = createLogBuffer(300); // what `log` prints: the providers' last lines, kept in memory only
@@ -168,12 +168,14 @@ async function doctor(flags, io) {
   if (!running) add(true, `Port ${port} is free`);
   else if (running.other) add(false, `Port ${port} is used by something that is not this program`, `Start with another port: --port ${port + 1}`);
   else add(true, `A copy (version ${running.version}) is running on port ${port}`);
-  const { providers } = createProviders({ dataDir, config, log: () => {}, only: ['deepseek', 'gemini', 'qwen'], sessions: !flags['no-sessions'] });
+  const { providers } = createProviders({ dataDir, config, log: () => {}, only: ['deepseek', 'gemini', 'qwen', 'bike4mind'], sessions: !flags['no-sessions'] });
   for (const p of providers) {
     try {
       const st = await p.status();
-      const label = !st.linked ? 'not linked' : st.expired ? 'sign-in expired' : 'linked';
-      add(true, `${p.name}: ${label}${st.sessions ? `; one chat per conversation ${st.sessions.enabled ? 'on' : `off${st.sessions.reason ? ` (${st.sessions.reason})` : ''}`}` : ''}`, st.linked && !st.expired ? '' : '', st.linked && !st.expired ? '' : 'Link it on the Accounts page.');
+      const keyLink = Boolean(p.capabilities && p.capabilities.link === 'key');
+      const expiredLabel = keyLink ? 'key refused' : 'sign-in expired';
+      const label = !st.linked ? 'not linked' : st.expired ? expiredLabel : 'linked';
+      add(true, `${p.name}: ${label}${st.sessions ? `; one chat per conversation ${st.sessions.enabled ? 'on' : `off${st.sessions.reason ? ` (${st.sessions.reason})` : ''}`}` : ''}`, st.linked && !st.expired ? '' : '', st.linked && !st.expired ? '' : (keyLink ? 'Paste an API key on the Accounts page.' : 'Link it on the Accounts page.'));
     } catch (err) { add(false, `${p.name}: could not read its state (${(err && err.message) || err})`); }
     try { if (p.stop) await p.stop(); } catch (_) { /* nothing was started */ }
   }

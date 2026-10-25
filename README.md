@@ -6,19 +6,19 @@
 [![Status: Alpha](https://img.shields.io/badge/Status-Alpha-orange.svg)](#status-and-limits)
 
 > **A local, OpenAI-compatible API and web playground for the personal chat accounts you already have.**
-> Link your own DeepSeek, Gemini or Qwen account once. Get a web interface to talk to it and `http://localhost:8420/v1`
+> Link your own DeepSeek, Gemini or Qwen account once, or paste a Bike4Mind API key from your own Bike4Mind account. Get a web interface to talk to it and `http://localhost:8420/v1`
 > for your own code. No dependencies, no cloud, nothing leaves your computer except the requests to the provider.
-> "Free" in the name means the free personal chat accounts you already have: this adds no capacity, you get what your own account gets.
+> "Free" in the name means the free personal chat accounts and free credits you already have: this adds no capacity, you get what your own account gets.
 
-> **An experiment, for personal chat accounts only.** It works through the DeepSeek, Gemini and Qwen chat websites you sign in to yourself. It does not use, ask for or support developer API keys from any provider. The only API keys in it are the ones this program makes for your own local use. It can be slow or break whenever the websites change, and it is not meant for production.
+> **An experiment, for personal accounts.** DeepSeek, Gemini and Qwen work through their chat websites, which you sign in to yourself. Bike4Mind works through its **official API**, with a key you make in your own Bike4Mind account and the free credits that account has; that is the one developer API key this program accepts. It does not use, ask for or support developer API keys from DeepSeek, Google or Alibaba. The other API keys in it are the ones this program makes for your own local use. The website lanes can be slow or break whenever the sites change, and it is not meant for production.
 
-> **Unofficial, and it carries real risk.** This is not made or endorsed by DeepSeek, Google or Alibaba, it may break their
-> terms, and an account used this way can be slowed down, muted or signed out. It paces and caps itself to lower that
-> risk, not to remove it. Read the [DISCLAIMER](DISCLAIMER.md) before you link anything, and use an account you can afford to lose.
+> **Unofficial, and it carries real risk.** This is not made or endorsed by DeepSeek, Google, Alibaba or Bike4Mind. The website lanes may break those providers'
+> terms, and an account used that way can be slowed down, muted or signed out. Bike4Mind is used as its API documents, and every request spends that account's credits.
+> The program paces and caps itself to lower the risk, not to remove it. Read the [DISCLAIMER](DISCLAIMER.md) before you link anything, and use an account you can afford to lose.
 
 ## Quick start
 
-You need Node.js 22 or newer, and Google Chrome (for linking an account; Qwen also answers through it, so its window stays open while the program runs).
+You need Node.js 22 or newer. Google Chrome is needed to link DeepSeek, Gemini or Qwen (Qwen also answers through it, so its window stays open while the program runs). Bike4Mind needs no Chrome: it links with a pasted API key.
 
 ```bash
 npx unofficial-free-llm-api@latest        # @latest: npx may otherwise run an older copy it kept; or: npx github:teminali/unofficial-free-llm-api, or git clone then npm start
@@ -26,7 +26,7 @@ npx unofficial-free-llm-api@latest        # @latest: npx may otherwise run an ol
 
 The terminal prints a link and opens it: that is the web interface. It also prints your first API key (show it again any time: `unofficial-free-llm-api key show`, or the *Show* button on the API page).
 
-1. **Accounts** → *Link account* → tick the box → sign in to the provider in the Chrome window that opens → *I have signed in*.
+1. **Accounts** → *Link account* → tick the box → sign in to the provider in the Chrome window that opens → *I have signed in*. For Bike4Mind, paste a `b4m_` API key from your account instead; no window opens.
 2. **Playground** → pick a model and talk to it.
 3. **API** → copy the base URL and a key into your own code.
 
@@ -49,7 +49,7 @@ markdown; *Accounts* to link and unlink, with usage, limits and cooldowns; *API*
 
 | Route | What |
 |---|---|
-| `GET /v1/models`, `GET /v1/models/{id}` | the models of the accounts that are linked right now, with a working `context_length`; Gemini's and Qwen's lists follow the account (`gemini` / `gemini-auto` always exist) |
+| `GET /v1/models`, `GET /v1/models/{id}` | the models of the accounts that are linked right now, with a working `context_length`; Gemini's, Qwen's and Bike4Mind's lists follow the account (`gemini` / `gemini-auto` always exist) |
 | `POST /v1/chat/completions` | chat, streaming (`stream: true`), tool calls, JSON mode, `reasoning_content` |
 | `POST /v1/responses` | OpenAI's Responses API: text, function calls, streaming, `previous_response_id` |
 | `POST /v1/messages`, `POST /v1/messages/count_tokens` | Anthropic's Messages API: text, thinking, `tool_use`, streaming |
@@ -78,43 +78,47 @@ More in [docs/api.md](docs/api.md) and [examples/](examples/): curl, Python, Nod
 | Gemini | `gemini`, `gemini-auto` | always listed: the mode the page is on, with no model chosen (`gemini-auto` takes the name of the account's own Auto row when it has one) |
 | | `gemini-<name>` | one per other model your account's picker offers (for example `gemini-3-5-flash-lite`), read when you link and again when the list is 15 minutes old (a call or a client listing the models does it), or press *Read models again* on the Accounts page |
 | Qwen | the account's own ids, for example `qwen3.7-plus`, `qwen3.8-max` | one per model your Qwen account offers, read when you link and refreshed in the background when a client lists the models, or with *Read models again*; there is no fixed alias, so the ids are the account's |
+| Bike4Mind | the ids its API reports, for example the models in your account's list | one per text model your Bike4Mind key can use, read when you link and refreshed the same way; each is sent to its official API with the tools, pictures and thinking the model says it supports, and its real context size is listed |
 | Demo | `demo-echo`, `demo-thinker` | only with `--demo` |
 
-Ids can also be written `deepseek/deepseek-chat` or `qwen/qwen3.7-plus`. `reasoning_effort` (`low`, `medium`, `high`) sets Gemini's thinking level; DeepSeek and Qwen ignore it. Every model lists a `context_length` of 128000: a working size this program chooses, not the model's maximum (the chat websites publish no limits). The API page has a box that copies the name, address, models and context size for a client with a form to fill in (the key is left for you to paste).
+Ids can also be written `deepseek/deepseek-chat`, `qwen/qwen3.7-plus` or `bike4mind/<id>`. `reasoning_effort` (`low`, `medium`, `high`) sets Gemini's thinking level and Bike4Mind's reasoning effort; DeepSeek and Qwen ignore it. The website models list a `context_length` of 128000: a working size this program chooses, not the model's maximum (the chat websites publish no limits). Bike4Mind models list the context size its API reports. The API page has a box that copies the name, address, models and context size for a client with a form to fill in (the key is left for you to paste).
 
 ## How it works
 
 A web chat takes one text message and answers with text. For every request the bridge:
 
 1. **Checks the governor**: a cooldown, the daily cap or a full queue is answered at once with `429` and `Retry-After`, and nothing is sent upstream.
-2. **Finds the chat.** An API request carries the whole conversation every time. If its first messages are exactly what an open chat on the account already holds,
+2. **Finds the chat** (DeepSeek, Gemini and Qwen only). An API request carries the whole conversation every time. If its first messages are exactly what an open chat on the account already holds,
    the request is a continuation: it goes into that chat and carries only what is new. Anything else (an edited message, other tools, another model) starts a new chat.
-   One conversation is one chat, like a person's.
-3. **Builds the message**: for a new chat, the system text, the transcript and, when you send `tools`, a short bridge that asks the model for a call in a plain
-   format (a request with no tools is sent as it is); for a continued chat, just the new messages.
+   One conversation is one chat, like a person's. Bike4Mind has no chat to find: its API takes the whole conversation on every call.
+3. **Builds the message**: for a new website chat, the system text, the transcript and, when you send `tools`, a short bridge that asks the model for a call in a plain
+   format (a request with no tools is sent as it is); for a continued chat, just the new messages. Bike4Mind gets the conversation and its tools natively,
+   because its API takes them that way; there is no tool protocol in words.
 4. **Asks the account** (DeepSeek: its web endpoints with your saved session and its proof-of-work; Gemini: the chat page in a Chrome that has your profile;
-   Qwen: its own message box and Send button in a Chrome that has your profile), one request at a time, paced.
+   Qwen: its own message box and Send button in a Chrome that has your profile; Bike4Mind: `POST /api/ai/v1/completions` with your key), one request at a time, paced.
 5. **Reads the answer** back into OpenAI shape: text, `reasoning_content`, `tool_calls`. A tool call is read from every shape these chats were seen
-   to use, and only for tools you offered. A call cut off mid-way is asked for again once, then reported as an error.
+   to use, and only for tools you offered. A call cut off mid-way is asked for again once, then reported as an error. Bike4Mind answers as a stream of events
+   even when `stream` is not set; a native `tool_use` event becomes the same `tool_calls` shape, and its own output limit becomes `finish_reason: "length"`.
 
 Chats are removed when their conversation ends (20 minutes without a request, at most 6 open, or a chat grown long), and when the program stops. That covers DeepSeek
-and the Qwen chats this program created; other Qwen chats are never touched. A Gemini chat is never deleted: it stays in your Gemini history. Name a conversation
+and the Qwen chats this program created; other Qwen chats are never touched. A Gemini chat is never deleted: it stays in your Gemini history. Bike4Mind keeps nothing
+on its side between calls. Name a conversation
 with the `user` field or an `X-ULA-Session` header if you want it kept apart. `--no-sessions` (or `ULA_SESSIONS=0`) goes back to one new chat for every request.
 
-Linking never sees your password: you sign in yourself, in a Chrome window, and the bridge keeps the session that results.
+Linking the website providers never sees your password: you sign in yourself, in a Chrome window, and the bridge keeps the session that results. Bike4Mind never sees a password either: you paste an API key from your own account, and the program sends it only to `app.bike4mind.com`.
 
 ## Safety built in
 
 | What | How |
 |---|---|
-| Pace | DeepSeek: one request at a time, at least 4 s apart, at most 10 a minute (it waits, it does not fail). Gemini: 1 s apart, 20 a minute. Qwen: at least 10 s apart, 6 a minute |
-| One chat per conversation | A conversation stays in one provider chat instead of opening (and deleting) a chat for every message. If continuing a chat fails twice in a row, it switches itself off and says so |
-| Daily cap | 300 calls a day per account by default (Qwen: 100); change it on the Accounts page |
-| First refusal stops everything | A rate limit, a mute or a human check sets a cooldown (20 min for DeepSeek and Qwen, 5 for Gemini); a mute lasts as long as DeepSeek says. Qwen's browser verification pauses requests for 20 minutes, and the check is yours to complete |
+| Pace | DeepSeek: one request at a time, at least 4 s apart, at most 10 a minute (it waits, it does not fail). Gemini: 1 s apart, 20 a minute. Qwen: at least 10 s apart, 6 a minute. Bike4Mind: 1 s apart, 20 a minute, and its own rate limit is obeyed |
+| One chat per conversation | A conversation stays in one provider chat instead of opening (and deleting) a chat for every message. If continuing a chat fails twice in a row, it switches itself off and says so. Bike4Mind has no chat to keep: the API takes the conversation every time |
+| Daily cap | 300 calls a day per account by default (Qwen: 100); change it on the Accounts page. This caps calls, not credits: Bike4Mind bills every request from your balance |
+| First refusal stops everything | A rate limit, a mute or a human check sets a cooldown (20 min for DeepSeek and Qwen, 5 for Gemini; Bike4Mind pauses for at least a minute, or as long as its `Retry-After` says); a mute lasts as long as DeepSeek says. Qwen's browser verification pauses requests for 20 minutes, and the check is yours to complete. Bike4Mind's own error events end the request in words, and a key it refuses is marked refused until you replace it |
 | No retry storms | Retrying a muted account only makes it worse, so there is none; a cut-off call is retried once, an empty answer once, and a connection that failed before the message went out once (nothing was spent). A connection that breaks mid-answer is an error in words, never half an answer |
 | Loop guard | An agent that repeats the same step three times in a row is stopped before another call is spent |
 | Local only | Listens on `127.0.0.1`; other hosts are refused; a key is required for `/v1`; the web interface needs an admin token, which it trades for a session cookie (HttpOnly, SameSite=Strict, checked against the origin) |
-| Secrets | Sessions and config are mode 0600 in a 0700 folder; config.json keeps each API key (so you can copy it again) next to the admin token that can make keys; only metadata is ever logged |
+| Secrets | Sessions and config are mode 0600 in a 0700 folder; config.json keeps each API key (so you can copy it again) next to the admin token that can make keys; a Bike4Mind key is kept in `bike4mind_key.json`, mode 0600, and only ever sent to `app.bike4mind.com`; only metadata is ever logged |
 
 Details in [docs/security.md](docs/security.md).
 
@@ -122,7 +126,7 @@ Details in [docs/security.md](docs/security.md).
 
 ```
 unofficial-free-llm-api [start] [--port 8420] [--host 127.0.0.1] [--data-dir DIR] [--no-open]
-                           [--cors ORIGINS] [--no-key] [--no-sessions] [--demo] [--providers deepseek,gemini,qwen]
+                           [--cors ORIGINS] [--no-key] [--no-sessions] [--demo] [--providers deepseek,gemini,qwen,bike4mind]
 unofficial-free-llm-api key create [name] | key list | key show <id or name> | key revoke <id>
 unofficial-free-llm-api status | login-url | doctor [--online] | selftest [--model id] [--turns 3] [--yes] | log [--lines 100]
 ```
@@ -135,28 +139,30 @@ version (the only time this program calls anything but your providers, and only 
 server and tells you whether it stayed in one provider chat; it spends one request per turn and prints sizes and times, never words. Starting a second copy
 prints the link of the one already running instead of an error.
 
-Running on a server with no desktop? Link on your computer, then see [docs/providers.md](docs/providers.md) for pasting a DeepSeek token and for what Gemini needs. Qwen needs a desktop, because its Chrome window must stay open.
+Running on a server with no desktop? Bike4Mind needs none: paste its key on the Accounts page of the running copy. For the website providers, link on your computer, then see [docs/providers.md](docs/providers.md) for pasting a DeepSeek token and for what Gemini needs. Qwen needs a desktop, because its Chrome window must stay open.
 
 ## Status and limits
 
 Alpha. What has been run, honestly:
 
 - The bridge, the server, the governor and the web interface have automated tests (`npm test`) that run against stand-ins: a scripted provider, a local copy of
-  DeepSeek's endpoints (which can drop connections and break streams on request), and a local page shaped like Gemini's. Qwen has no stand-in yet, so its lane has
-  been checked live only.
+  DeepSeek's endpoints (which can drop connections and break streams on request), a local page shaped like Gemini's, and a local copy of Bike4Mind's API (model
+  pages, credits and the event stream, including its errors). Qwen has no stand-in yet, so its lane has been checked live only.
 - **Run by the author on their own real accounts:** on 2026-10-22, linking DeepSeek and Gemini, chatting in the playground, a three-message DeepSeek conversation
   that stayed in one DeepSeek chat, a Gemini conversation that stayed in one Gemini chat, switching models (which starts another chat), and the model list read from a real
   Gemini picker. DeepSeek answered in 3 to 8 seconds. Gemini worked but was slow and uneven, and sometimes answered with its own error message (see below). On
   2026-10-23, linking Qwen and using Qwen3.7-Plus: a new chat (about 24 seconds for the first answer), a follow-up that stayed in the same chat (about 5 seconds),
   a cancelled request (no retry, the draft was put back), and a recovery that opened a replacement chat. Qwen3.8-Max answered with its own daily-limit message; it
   was not retried, and the program does not detect that message.
-- **Not yet run against a real account:** an agent sending `tools` (including on Qwen), long conversations, a day of steady use, `selftest --yes`, the Anthropic and
+- **Not yet run against a real account:** Bike4Mind (no key has been spent on the live API; its lane has been run against the local copy of its API described above),
+  an agent sending `tools` (including on Qwen), long conversations, a day of steady use, `selftest --yes`, the Anthropic and
   Responses APIs with their own clients, and the no-desktop setup. Reusing one chat per conversation is built to fail safe (a chat that cannot be continued is given
   up and the request is asked again on a new chat; two such failures in a row switch it off), but only short real conversations have shown it work. An issue with what you
   saw (the lines from `unofficial-free-llm-api log`, no prompts) is the most useful contribution there is.
 - **Qwen can ask for a browser check.** When it does, the request fails with `403 qwen_verification_required`, requests pause for 20 minutes, and you complete the
   check in Qwen's own window. The program does not try to pass it or retry around it.
-- Not supported: images in, `temperature`/`top_p`/`seed` and the like (named in an `X-ULA-Ignored` response header, not silently dropped), `max_tokens`/`stop` when tools are sent (honoured for a plain chat), `n > 1` (refused), embeddings, function-call strictness. Token counts are estimates (characters / 4).
+- Pictures: DeepSeek takes pictures sent inline (a `data:` URL in a user or tool message) as attached files, the newest four of a message, each up to 10 MB; a picture that cannot go is said to the model in the prompt. What DeepSeek's chat does with a picture (read its text, or look at it) is DeepSeek's, not this program's. Bike4Mind takes inline pictures natively when the chosen model supports vision (up to 8, 10 MB each, 20 MB of base64 in one request); a model without vision is told the pictures are not visible to it. Gemini, Qwen, the Anthropic and Responses APIs, and a picture given as an address (never fetched) still become a note.
+- Not supported: `top_p`/`seed` and the like (named in an `X-ULA-Ignored` response header, not silently dropped; `temperature` is used by Bike4Mind and ignored by the rest), `max_tokens`/`stop` when tools are sent (honoured for a plain chat), `n > 1` (refused), embeddings, function-call strictness. Token counts are estimates (characters / 4).
 - Gemini's Chrome runs in the background by default; if Google shows a human check there, the page opens for you to pass it.
 - Providers change their sites without notice. When one breaks, [open an issue](../../issues).
 
@@ -180,6 +186,8 @@ This applies to the Chrome window this program opens as well: when its check can
 around it. Its Chrome window stays open while the program runs: complete the check there, then wait for the 20-minute pause to end. If the window is not on screen,
 bring it up with the Qwen card on the Accounts page. Qwen can also answer with its own limit message as ordinary text (Qwen3.8-Max did, for its daily limit); that
 text is returned as the answer, not reported as an error, and no model is switched automatically.
+
+**Bike4Mind says the key was refused, or a request stops for credits.** A key that Bike4Mind refuses (401), or one without the `ai:chat` scope (403), is marked refused and its model list is cleared; make a new key in your Bike4Mind account with that scope and paste it under *Replace the API key*. `422 insufficient_credits` means the balance is spent: top up in Bike4Mind or choose another model. A 429 pauses requests for at least a minute, or for as long as Bike4Mind's `Retry-After` says, and nothing is retried around it. The balance shown is read from Bike4Mind (at linking, with *Read models again*, after each request's own credit event, and again after ten quiet minutes); the daily cap limits calls, not credits, so watch the balance in your account.
 
 **Gemini lists only one model, or the model you pick does nothing.** Run `unofficial-free-llm-api log` after a message and look at the lines that start with `gemini:`: they say where the time went and what the page offered. `ULA_GEMINI_VISIBLE=1` shows Gemini's Chrome window instead of hiding it, which helps to tell a page problem from a program problem.
 

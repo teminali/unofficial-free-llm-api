@@ -12,7 +12,7 @@ const { createChatEngine } = require('../../src/engine');
 const { createGovernor } = require('../../src/governor');
 const { fencedBridgeSection } = require('../../src/bridge');
 
-function createFakeProvider({ dir, bus = null, id = 'fake', name = 'Fake', pace = { minGapMs: 1, perMinute: 1000, smooth: true, cooldownMs: 60000 }, dailyCap = 300, fenced = false } = {}) {
+function createFakeProvider({ dir, bus = null, id = 'fake', name = 'Fake', pace = { minGapMs: 1, perMinute: 1000, smooth: true, cooldownMs: 60000 }, dailyCap = 300, fenced = false, keyLink = false } = {}) {
   const governor = createGovernor({ storagePath: path.join(dir, `usage-${id}.json`), providerName: name, dailyCap, pace });
   const calls = [];
   const script = {
@@ -20,6 +20,7 @@ function createFakeProvider({ dir, bus = null, id = 'fake', name = 'Fake', pace 
     expired: false,
     delayMs: 0,
     chunk: 6,
+    credits: null,
     reply: () => ({ ok: true, text: 'Hello from the fake chat.' })
   };
   const MODELS = [
@@ -58,7 +59,9 @@ function createFakeProvider({ dir, bus = null, id = 'fake', name = 'Fake', pace 
 
   const provider = {
     id, name,
-    capabilities: { link: 'chrome', token: false, settings: ['dailyCap'] },
+    capabilities: keyLink
+      ? { link: 'key', key: true, refreshModels: true, settings: ['dailyCap'] }
+      : { link: 'chrome', token: false, settings: ['dailyCap'] },
     engine, governor, web, calls, script,
     models: () => (script.linked && !script.expired ? MODELS : []),
     async status() {
@@ -67,12 +70,24 @@ function createFakeProvider({ dir, bus = null, id = 'fake', name = 'Fake', pace 
         expired: script.expired,
         expiredReason: script.expired ? `Your ${name} session has expired. Sign in again on the Accounts page.` : null,
         models: provider.models(),
+        ...(Number.isFinite(script.credits) ? { credits: { balance: script.credits, checkedAt: new Date().toISOString() } } : {}),
         usage: governor.getStats()
       };
     },
     async startLink() { script.linked = true; script.expired = false; return { ok: true }; },
     async finishLink() { return { ok: true, linked: true }; },
-    async unlink() { script.linked = false; return { linked: false }; },
+    ...(keyLink ? {
+      async linkToken({ token, consentAcknowledged } = {}) {
+        if (!consentAcknowledged) return { ok: false, error: 'Confirm that this bridge may use your Fake API key before linking.' };
+        if (!/^b4m_[A-Za-z0-9._-]{8,}$/.test(String(token || '').trim())) return { ok: false, error: 'That is not a Bike4Mind API key. Keys begin with b4m_.' };
+        script.linked = true;
+        script.expired = false;
+        script.credits = 5000;
+        return { ok: true, linked: true };
+      },
+      async refreshModels() { return Boolean(script.linked && !script.expired); }
+    } : {}),
+    async unlink() { script.linked = false; script.credits = null; return { linked: false }; },
     resetUsage() { governor.resetUsage(); },
     async setSettings(patch) { if (patch.dailyCap) governor.setDailyCap(patch.dailyCap); return provider.status(); }
   };

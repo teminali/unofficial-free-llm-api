@@ -507,3 +507,93 @@ test('the end of a real stream is logged once by the names of its events, with n
     assert.ok(!/Words of the answer/.test(t.logs.join('\n')), 'no words of the answer in the log');
   } finally { await t.close(); }
 });
+
+// ---- pictures --------------------------------------------------------------------------------------------------------------------------------
+
+const picture = (tag) => `data:image/png;base64,${Buffer.from(`\x89PNG-stand-in-picture-${tag}`).toString('base64')}`;
+const askAbout = (text, ...urls) => ({ role: 'user', content: [{ type: 'text', text }, ...urls.map((url) => ({ type: 'image_url', image_url: { url } }))] });
+const stateOf = async (t) => (await fetch(`${t.site.base}/state`)).json();
+
+test('pictures: an attached picture is uploaded as a file for its own proof-of-work, waited for, and named in the completion', async () => {
+  const t = await boot();
+  try {
+    t.site.state.reply = () => 'It is a stand-in picture.';
+    const res = await t.chat({ model: 'deepseek-chat', messages: [askAbout('What is in this picture?', picture('a'))] });
+    assert.equal(res.status, 200, await res.clone().text());
+    assert.equal((await res.json()).choices[0].message.content, 'It is a stand-in picture.');
+    const s = await stateOf(t);
+    assert.equal(s.uploads.length, 1);
+    assert.equal(s.uploads[0].mime, 'image/png');
+    assert.equal(s.uploads[0].name, 'image-1.png');
+    assert.equal(s.uploads[0].size, Buffer.from('\x89PNG-stand-in-picture-a').length, 'the file is the picture, byte for byte');
+    assert.equal(s.uploads[0].target, '/api/v0/file/upload_file', 'the proof-of-work was asked for the upload path');
+    assert.equal(s.powFailures, 0);
+    assert.deepEqual(s.completions[0].files, ['file-1']);
+    assert.match(s.completions[0].promptHead, /What is in this picture\?\n\[attached image 1\]/);
+    assert.ok(t.site.state.polls['file-1'] >= 2, 'the file was waited for until the site had read it');
+    assert.ok(!/omitted/.test(s.completions[0].promptHead));
+  } finally { await t.close(); }
+});
+
+test('pictures: the same picture sent again is not uploaded again, and a request with no picture sends no files', async () => {
+  const t = await boot();
+  try {
+    for (let i = 0; i < 2; i += 1) assert.equal((await t.chat({ model: 'deepseek-chat', messages: [askAbout(`Question ${i}`, picture('same'))] })).status, 200);
+    assert.equal((await t.chat({ model: 'deepseek-chat', messages: [user('No picture here')] })).status, 200);
+    const s = await stateOf(t);
+    assert.equal(s.uploads.length, 1, 'one upload for one picture');
+    assert.deepEqual(s.completions.map((c) => c.files), [['file-1'], ['file-1'], []]);
+  } finally { await t.close(); }
+});
+
+test('pictures: only the newest four go with a message, and the prompt says which did not', async () => {
+  const t = await boot();
+  try {
+    const res = await t.chat({ model: 'deepseek-chat', messages: [askAbout('Look at all of these', ...['1', '2', '3', '4', '5', '6'].map(picture))] });
+    assert.equal(res.status, 200);
+    const s = await stateOf(t);
+    assert.equal(s.uploads.length, 4);
+    assert.equal(s.completions[0].files.length, 4);
+    const prompt = t.site.state.completions[0].prompt;
+    assert.match(prompt, /image 1: only the newest 4 pictures are sent/);
+    assert.match(prompt, /image 2: only the newest 4 pictures are sent/);
+    assert.match(prompt, /NOT visible to you/);
+  } finally { await t.close(); }
+});
+
+test('pictures: a file the site refuses, finds empty or fails on is told to the model, and the question is still answered', async () => {
+  for (const [uploadState, words] of [['refuse', /file type not supported/], ['CONTENT_EMPTY', /found nothing in the picture/], ['FAILED', /could not read the picture \(failed\)/]]) {
+    const t = await boot({ site: { uploadState, parsingPolls: 0 } });
+    try {
+      t.site.state.reply = () => 'I could not see it.';
+      const res = await t.chat({ model: 'deepseek-chat', messages: [askAbout('What is this?', picture('x'))] });
+      assert.equal(res.status, 200, uploadState);
+      assert.equal((await res.json()).choices[0].message.content, 'I could not see it.');
+      const sent = t.site.state.completions[0];
+      assert.deepEqual(sent.files, [], uploadState);
+      assert.match(sent.prompt, /Note from the bridge: image 1:/, uploadState);
+      assert.match(sent.prompt, words, uploadState);
+      assert.match(sent.prompt, /NOT visible to you/);
+      assert.ok(!t.logs.join('\n').includes(TOKEN), 'no token in the log');
+    } finally { await t.close(); }
+  }
+});
+
+test('pictures: a login the site refuses while a picture is going up is an expired sign-in, like any other call', async () => {
+  const t = await boot({ site: { authFail: true } });
+  try {
+    const res = await t.chat({ model: 'deepseek-chat', messages: [askAbout('What is this?', picture('x'))] });
+    assert.equal(res.status, 401);
+    assert.match((await res.json()).error.message, /session has expired/i);
+  } finally { await t.close(); }
+});
+
+test('pictures: a picture that is an address, not a file, is left out with the note it always had, and nothing is uploaded', async () => {
+  const t = await boot();
+  try {
+    const res = await t.chat({ model: 'deepseek-chat', messages: [askAbout('What is this?', 'https://example.com/a.png')] });
+    assert.equal(res.status, 200);
+    assert.equal((await stateOf(t)).uploads.length, 0);
+    assert.match(t.site.state.completions[0].prompt, /\[image omitted by the bridge\]/);
+  } finally { await t.close(); }
+});

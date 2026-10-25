@@ -28,10 +28,10 @@ async function until(test_, ms = 4000) {
   return false;
 }
 
-async function open({ hash = '', provider: tweak, setup, local = {} } = {}) {
+async function open({ hash = '', provider: tweak, setup, local = {}, keyLink = false } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ula-ui-'));
   const bus = new EventEmitter();
-  const fake = createFakeProvider({ dir, bus });
+  const fake = createFakeProvider({ dir, bus, keyLink });
   if (tweak) tweak(fake);
   const config = createConfig({ dataDir: dir });
   if (setup) setup({ fake, config, dir });
@@ -185,6 +185,40 @@ test('the Accounts page shows state and usage, the consent gate guards linking, 
     ui.click([...sure.querySelectorAll('button')].find((b) => b.textContent === 'Unlink'));
     assert.ok(await until(() => /Not linked/.test(ui.$('[data-view="accounts"] article').textContent)));
     assert.deepEqual(ui.nativeConfirms, [], 'the browser\'s own confirm box was not used');
+  } finally { await ui.close(); }
+});
+
+test('a key provider links with a pasted key, folds the field away, and shows its credits', { skip }, async () => {
+  const ui = await open({
+    hash: '#accounts',
+    keyLink: true,
+    setup: ({ fake }) => { fake.script.linked = false; fake.script.credits = null; }
+  });
+  try {
+    assert.ok(await until(() => ui.$('[data-view="accounts"] article')));
+    const card = () => ui.$('[data-view="accounts"] article');
+    assert.match(card().textContent, /Not linked/);
+    assert.match(card().textContent, /b4m_/);
+    assert.ok(ui.$('#key-fake'), 'the key field is shown instead of a Chrome stepper');
+    assert.equal([...card().querySelectorAll('button')].some((b) => b.textContent === 'Sign in again'), false);
+    ui.$('#key-fake').value = 'b4m_live_ui_test_123456';
+    ui.click([...card().querySelectorAll('button')].find((b) => b.textContent === 'Link account'));
+    const dialog = ui.$('dialog');
+    assert.ok(dialog.hasAttribute('open'));
+    assert.match(dialog.textContent, /billed in credits/);
+    const go = [...dialog.querySelectorAll('button')].find((b) => b.textContent === 'Use this API key');
+    assert.equal(go.disabled, true, 'the button stays off until the box is ticked');
+    const tick = dialog.querySelector('input[type="checkbox"]');
+    tick.checked = true;
+    tick.dispatchEvent(new ui.window.Event('change'));
+    assert.equal(go.disabled, false);
+    ui.click(go);
+    assert.ok(await until(() => /Linked/.test(card().textContent)), 'the key linked the account');
+    assert.ok(await until(() => /5[,.]?000/.test(card().textContent)), 'the credit balance is shown');
+    const tokenCall = ui.sent.find((r) => r.path.endsWith('/providers/fake/token'));
+    assert.equal(tokenCall.body.token, 'b4m_live_ui_test_123456');
+    assert.equal(tokenCall.body.consentAcknowledged, true);
+    assert.ok(ui.$('#key-fake').closest('details'), 'once linked, the key field is folded away');
   } finally { await ui.close(); }
 });
 

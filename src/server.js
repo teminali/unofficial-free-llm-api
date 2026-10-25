@@ -246,7 +246,8 @@ function createServer({ config, registry, version = '0.0.0', host = '127.0.0.1',
     if (!state.linked) return fail(409, `${provider.id}_not_linked`, `${provider.name} is not linked. Open ${baseUrl()} and link it on the Accounts page.`);
     if (state.expired) return fail(401, `${provider.id}_session_expired`, state.expiredReason || `Your ${provider.name} session has expired. Sign in again on the Accounts page.`);
     for (const [k, v] of Object.entries(extra)) res.setHeader(k, v);
-    const ignored = IGNORED_FIELDS.filter((f) => original[f] !== undefined && original[f] !== null);
+    const keepsTemperature = Boolean(provider.capabilities && provider.capabilities.temperature);
+    const ignored = IGNORED_FIELDS.filter((f) => original[f] !== undefined && original[f] !== null && !(f === 'temperature' && keepsTemperature));
     // A cut through a tool call would be a broken call, so a request with tools is not cut: max_tokens and stop are ignored for it, and said to be.
     if (Array.isArray(body.tools) && body.tools.length > 0 && body.tool_choice !== 'none') for (const f of ['max_tokens', 'max_completion_tokens', 'stop']) if (body[f] !== undefined && body[f] !== null) ignored.push(f);
     if (ignored.length) res.setHeader('X-ULA-Ignored', ignored.join(', '));

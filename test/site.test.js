@@ -109,7 +109,7 @@ describe('notice before command', () => {
       assert.ok(footer.includes(`href="${u}"`), `footer lacks ${u}`);
     }
     assert.match(textOf(footer), /MIT/);
-    assert.match(textOf(footer), /Not affiliated with DeepSeek, Google or Alibaba/);
+    assert.match(textOf(footer), /Not affiliated with DeepSeek, Google, Alibaba or Bike4Mind/);
   });
 });
 

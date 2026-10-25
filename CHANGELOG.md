@@ -1,5 +1,54 @@
 # Changelog
 
+## 0.5.0 (2026-10-25)
+
+### Added
+
+- **Bike4Mind, through its own official API.** A fourth provider, and the one place this program accepts a developer API key: make one in your Bike4Mind account
+  and paste it on the Accounts page. Nothing opens a browser, so it works on a machine with no desktop. The consent box says what it means before the key is sent:
+  the key stays on this computer, requests go only to `app.bike4mind.com`, and every request spends that account's credits. A refused key, or one without the
+  `ai:chat` scope, is not saved.
+- **Models, limits and credits from the API.** The model list is read when you link (cursor pages, text models only) and carries each model's real context size,
+  output limit, and whether it takes tools, pictures and thinking. The credit balance is shown on the Accounts card: read at linking, with *Read models again*,
+  after each request's own credit event, and again after ten quiet minutes. *Read models again* and the background refresh work as they do for Gemini and Qwen.
+- **Native tools, pictures and thinking.** Tools go to the API in its own `tools: [{ toolSchema }]` shape, and a native `tool_use` event becomes the same
+  `tool_calls` a client already receives. A model that says it does not call tools refuses a request that offers them before anything is spent. Inline pictures go
+  as native image parts when the model supports vision (up to 8, 10 MB each, 20 MB of base64 in one request); a model without vision, or a picture over the limits,
+  is told in the prompt. `reasoning_effort` and a thinking request are sent in the API's own `options`.
+- **The stream is read as the API sends it.** Bike4Mind answers with server-sent events whether or not the caller asked to stream. `content` events may carry a
+  delta or the whole answer so far, and thinking arrives as blocks; all are reduced to the new text. An in-band error ends the request in words. A model's own
+  output limit becomes `finish_reason: "length"` instead of a silently short answer.
+- `temperature` now reaches a provider that uses it (Bike4Mind); `X-ULA-Ignored` no longer names it for that provider. The other providers still ignore it, and
+  the header still says so.
+
+### Not covered
+
+- **Not yet run against the real API.** No key has been spent on the live service. The lane is tested against `test/fixtures/fake_bike4mind.js`, a local server
+  shaped from Bike4Mind's published OpenAPI document (cursor model pages, credits, the event stream and its errors). If the live API answers differently, the
+  stand-in needs the difference.
+- Bike4Mind has no `tool` role and ignores plain system prompts, so the conversation, including tool results, still travels as one transcript in a `user` message;
+  only the tools are native. A conversation is not kept on Bike4Mind's side between calls.
+
+## 0.4.0 (2026-10-24)
+
+### Added
+
+- **Pictures on DeepSeek.** A picture sent inline in a chat completion (`image_url` with a `data:` URL, in a user message or a tool result) is attached to the
+  message the way the web app attaches a file: a proof-of-work for the upload path, a multipart upload, a wait until DeepSeek has read the file, and its id in
+  `ref_file_ids` of the completion. Before, every picture became the words "[image omitted by the bridge]" and the model answered without it.
+  The newest four pictures of a message go (10 MB each); the same picture is uploaded once and kept for 15 minutes; a chat that continues is sent only the
+  pictures of its new messages, and a picture keeps its number (`[attached image N]`) through the whole conversation.
+- A picture that cannot go (refused, empty, failed, too large, over the four) is said in the prompt ("Note from the bridge: image 2: ...; those pictures are NOT
+  visible to you"), so the model tells the person instead of guessing. A refused sign-in, a rate limit or a mute during an upload ends the request like they do anywhere else.
+- Two messages that differ only in their picture are no longer taken for the same message when a conversation is matched to its open chat.
+
+### Not covered
+
+- Gemini and Qwen, the Anthropic and Responses APIs, and a picture given as an address (the bridge never fetches an address a client names) still become a note.
+- **Not yet run against the real site.** The upload follows the file endpoints of DeepSeek's web app (`/api/v0/file/upload_file`, `/api/v0/file/fetch_files`) as the stand-in
+  in `test/fixtures/fake_deepseek.js` answers them; if the site answers differently, the picture is reported in the prompt as not sent and the question is still answered.
+  What DeepSeek's chat does with an attached picture (read the text in it, or look at it) is decided by DeepSeek.
+
 ## 0.3.0 (2026-10-23)
 
 ### Added

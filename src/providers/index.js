@@ -10,10 +10,11 @@ const FACTORIES = {
   deepseek: () => require('./deepseek').createDeepSeekProvider,
   gemini: () => require('./gemini').createGeminiProvider,
   qwen: () => require('./qwen').createQwenProvider,
+  bike4mind: () => require('./bike4mind').createBike4MindProvider,
   demo: () => require('./demo').createDemoProvider
 };
 
-function createProviders({ dataDir, config, log = () => {}, only = ['deepseek', 'gemini', 'qwen'], sessions = true }) {
+function createProviders({ dataDir, config, log = () => {}, only = ['deepseek', 'gemini', 'qwen', 'bike4mind'], sessions = true }) {
   const bus = new EventEmitter();
   const providers = only.map((id) => {
     if (!FACTORIES[id]) throw new Error(`Unknown provider "${id}". Known: ${Object.keys(FACTORIES).join(', ')}.`);

@@ -6,6 +6,9 @@
  * made with `keep` leaves the chat open and hands back a `remote` ({ id, lastId }: the chat and the message the next one continues from), and a call made with
  * that `remote` continues the same chat: that is what the engine does for a conversation it has seen before (src/sessions.js), the way the web app continues a
  * chat. The engine asks for a chat to be removed with `closeSession`; only chats this module opened are ever passed to it.
+ *
+ * Pictures (`images`): the engine hands the pictures of a prompt to `completeOnce`, which sends them to the site as attached files (see "pictures" below) and says
+ * in the prompt about any that could not go. What the site does with a picture (reading its text, or looking at it) is the site's: the bridge only attaches it.
  */
 'use strict';
 
@@ -118,7 +121,7 @@ function describeEvent(ev) {
   return parts.join(' ');
 }
 
-function createDeepSeekWeb({ dataDir, base = DEFAULT_BASE, log = () => {}, governor = null, onAuthExpired = () => {}, networkRetryMs = 800, closeRetryMs = 30000 }) {
+function createDeepSeekWeb({ dataDir, base = DEFAULT_BASE, log = () => {}, governor = null, onAuthExpired = () => {}, networkRetryMs = 800, closeRetryMs = 30000, uploadPollMs = 800, uploadWaitMs = 40000, uploadKeepMs = 15 * 60 * 1000, maxPictures = 4, maxPictureBytes = 10 * 1048576 }) {
   const BASE = base;
   let streamEndLogged = false; // how a real stream ends is written to the log once per run, by names only (see completion)
   const sessionPath = () => path.join(dataDir, 'deepseek_session.json');
@@ -176,6 +179,11 @@ function createDeepSeekWeb({ dataDir, base = DEFAULT_BASE, log = () => {}, gover
 
   async function api(pathname, body, signal) {
     const res = await fetch(BASE + pathname, { method: 'POST', headers: headers(), body: JSON.stringify(body || {}), signal, redirect: 'error' });
+    return read(res);
+  }
+
+  /** What an answer of the site's JSON API means: { status, data, text }, or an error that says what it was (muted, refused, expired). */
+  async function read(res) {
     const text = await res.text();
     let data = null;
     try { data = JSON.parse(text); } catch (_) { data = null; }
@@ -240,8 +248,8 @@ function createDeepSeekWeb({ dataDir, base = DEFAULT_BASE, log = () => {}, gover
     return (await deleteChat(remote.id)) === 'later' ? { retryAfterMs: closeRetryMs } : undefined;
   }
 
-  async function powHeader(signal) {
-    const r = await api('/api/v0/chat/create_pow_challenge', { target_path: '/api/v0/chat/completion' }, signal);
+  async function powHeader(signal, target = '/api/v0/chat/completion') {
+    const r = await api('/api/v0/chat/create_pow_challenge', { target_path: target }, signal);
     const challenge = r.data && r.data.data && r.data.data.biz_data && r.data.data.biz_data.challenge;
     if (!challenge) throw new Error('DeepSeek did not send a proof-of-work challenge');
     // Only the one algorithm this program has is worked on: another one would be searched through its whole difficulty and then fail.
@@ -251,8 +259,78 @@ function createDeepSeekWeb({ dataDir, base = DEFAULT_BASE, log = () => {}, gover
     return solvePow(challenge);
   }
 
+  // ---- pictures ---------------------------------------------------------------------------------------------------------------------------------
+  // A picture goes to the site the way the web app sends an attached file: a proof-of-work for the upload path, a multipart POST, a wait until the site has
+  // read the file, and then its id in `ref_file_ids` of the completion. A file belongs to the account, not to a chat, so one upload serves every chat; it is
+  // kept by its content for a while, so a conversation that sends the same picture again does not upload it again. Nothing here is logged but names and sizes.
+  const FILE_STATES_FAILED = /FAIL|ERROR|UNSUPPORTED|REJECT|TOO_LARGE|EXPIRED/i;
+  const uploaded = new Map(); // hash -> { id, at }
+
+  const fileOf = (biz, id) => {
+    const list = biz && Array.isArray(biz.files) ? biz.files : [];
+    return (id ? list.find((f) => f && String(f.id || f.file_id) === String(id)) : list[0]) || (biz && biz.file) || (biz && !Array.isArray(biz.files) && (biz.id || biz.file_id) ? biz : null);
+  };
+
+  async function uploadPicture(pic, signal) {
+    const cached = uploaded.get(pic.hash);
+    if (cached && Date.now() - cached.at < uploadKeepMs) return cached.id;
+    const started = Date.now();
+    const pow = await powHeader(signal, '/api/v0/file/upload_file');
+    const form = new FormData();
+    form.append('file', new Blob([pic.bytes], { type: pic.mime }), `image-${pic.n}.${pic.ext}`);
+    const h = headers({ 'x-ds-pow-response': pow });
+    delete h['content-type']; // the multipart boundary is the request's own
+    const sent = await read(await fetch(`${BASE}/api/v0/file/upload_file`, { method: 'POST', headers: h, body: form, signal, redirect: 'error' }));
+    let file = fileOf(sent.data && sent.data.data && sent.data.data.biz_data, null);
+    const id = file && (file.id || file.file_id);
+    if (!id) throw new Error('DeepSeek did not accept the picture (no file came back)');
+    // The site reads the file (it is parsed on its side) before a chat can use it: wait for that, a short while.
+    for (let waited = 0; ; waited += uploadPollMs) {
+      const state = String((file && (file.status || file.state)) || '');
+      if (/^(SUCCESS|READY|DONE|PARSED)$/i.test(state)) break;
+      if (/EMPTY/i.test(state)) throw new Error('DeepSeek found nothing in the picture that it could read');
+      if (FILE_STATES_FAILED.test(state)) throw new Error(`DeepSeek could not read the picture (${state.slice(0, 40).toLowerCase()})`);
+      if (waited >= uploadWaitMs) throw new Error('DeepSeek did not finish reading the picture in time');
+      await pause(uploadPollMs, signal);
+      if (signal && signal.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+      const h2 = headers(); delete h2['content-type'];
+      const now = await read(await fetch(`${BASE}/api/v0/file/fetch_files?file_ids=${encodeURIComponent(id)}`, { headers: h2, signal, redirect: 'error' }));
+      file = fileOf(now.data && now.data.data && now.data.data.biz_data, id) || file;
+    }
+    uploaded.set(pic.hash, { id, at: Date.now() });
+    while (uploaded.size > 60) uploaded.delete(uploaded.keys().next().value);
+    log(`deepseek web: picture uploaded (${pic.ext}, ${Math.ceil(pic.bytes.length / 1024)} KB, ${Date.now() - started} ms)`);
+    return id;
+  }
+
+  /**
+   * The pictures that go with one prompt: { ids, note }. The newest ones are sent (a message carries a few, not a whole conversation's); one that cannot be
+   * sent is said in `note`, which is added to the prompt so the model says so instead of guessing what the picture shows. A refusal of the account (expired
+   * sign-in, rate limit, mute) and a caller who left are not a picture's trouble: they go on as the error they are.
+   */
+  async function attachPictures(images, signal) {
+    const list = Array.isArray(images) ? images : [];
+    if (!list.length) return { ids: [], note: '' };
+    const send = list.slice(-maxPictures);
+    const problems = list.slice(0, list.length - send.length).map((p) => `image ${p.n}: only the newest ${maxPictures} pictures are sent with a message`);
+    const ids = [];
+    for (const pic of send) {
+      if (pic.bytes.length > maxPictureBytes) { problems.push(`image ${pic.n}: larger than ${Math.round(maxPictureBytes / 1048576)} MB`); continue; }
+      try {
+        ids.push(await uploadPicture(pic, signal));
+      } catch (err) {
+        if (err && ((err.classified && ['muted', 'auth_expired', 'rate_limited'].includes(err.classified.type)) || err.name === 'AbortError' || (signal && signal.aborted))) throw err;
+        const why = String((err && err.message) || err).replace(/\s+/g, ' ').slice(0, 160);
+        log(`deepseek web: a picture could not be sent: ${why}`);
+        problems.push(`image ${pic.n}: ${why}`);
+      }
+    }
+    const note = problems.length ? `\n\n[Note from the bridge: ${problems.join('; ')}. Those pictures are NOT visible to you. Say so if the answer depends on them; do not guess what they show.]` : '';
+    return { ids, note };
+  }
+
   /** One completion on one chat session. Resolves { ok, text, thinking, responseMessageId } or { failed, code, authExpired, rateLimited }. */
-  async function completion({ chatSessionId, parentMessageId = null, prompt, thinking = true, signal, onDelta = () => {}, onSent = () => {} }) {
+  async function completion({ chatSessionId, parentMessageId = null, prompt, fileIds = [], thinking = true, signal, onDelta = () => {}, onSent = () => {} }) {
     const pow = await powHeader(signal);
     if (signal && signal.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
     onSent();
@@ -263,7 +341,7 @@ function createDeepSeekWeb({ dataDir, base = DEFAULT_BASE, log = () => {}, gover
         chat_session_id: chatSessionId,
         parent_message_id: parentMessageId,
         prompt,
-        ref_file_ids: [],
+        ref_file_ids: fileIds,
         thinking_enabled: Boolean(thinking),
         search_enabled: false
       }),
@@ -370,7 +448,7 @@ function createDeepSeekWeb({ dataDir, base = DEFAULT_BASE, log = () => {}, gover
    * On auth expiration or 429/403, notifies and halts immediately without blind retries. A chat opened for this call is deleted when the call fails; one that was
    * continued is left to the engine, which ends its session.
    */
-  async function completeOnce({ prompt, thinking = true, signal = null, onDelta = () => {}, keep = false, remote = null }) {
+  async function completeOnce({ prompt, images = [], thinking = true, signal = null, onDelta = () => {}, keep = false, remote = null }) {
     if (!token()) {
       // A call that arrives after another one found the login refused (a title and the turn itself, say) gets the same plain answer, not "link an account".
       if (hadLogin()) return { ok: false, error: 'Your DeepSeek session has expired. Sign in again on the Accounts page.', authExpired: true };
@@ -382,8 +460,9 @@ function createDeepSeekWeb({ dataDir, base = DEFAULT_BASE, log = () => {}, gover
       let chatSessionId = null;
       const lose = () => { if (!continued) discardSession(chatSessionId); };
       try {
+        const files = await attachPictures(images, signal);
         chatSessionId = continued ? remote.id : await createSession(signal);
-        const out = await completion({ chatSessionId, parentMessageId: continued ? (remote.lastId === undefined ? null : remote.lastId) : null, prompt, thinking, signal, onDelta, onSent: () => { sent = true; } });
+        const out = await completion({ chatSessionId, parentMessageId: continued ? (remote.lastId === undefined ? null : remote.lastId) : null, prompt: prompt + files.note, fileIds: files.ids, thinking, signal, onDelta, onSent: () => { sent = true; } });
         if (!out.failed) {
           // A chat can only be continued from the message that answered: without its id the chat is not kept.
           if (keep && out.responseMessageId !== null && out.responseMessageId !== undefined) {
@@ -443,7 +522,7 @@ function createDeepSeekWeb({ dataDir, base = DEFAULT_BASE, log = () => {}, gover
     }
   }
 
-  return { token, completeOnce, closeSession, sessions: true, REQUEST_TIMEOUT_MS };
+  return { token, completeOnce, closeSession, sessions: true, images: true, REQUEST_TIMEOUT_MS };
 }
 
 module.exports = { createDeepSeekWeb, plainError, classifyError, mutedUntil, mutedMessage, REQUEST_TIMEOUT_MS };

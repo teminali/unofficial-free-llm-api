@@ -567,7 +567,7 @@
       const tried = st.requests.length > 0 || firstRequestDone();
       const linkedNames = st.providers.filter((p) => p.linked && !p.expired).map((p) => p.name);
       return [
-        { id: 'link', done: hasModels, title: 'Link an account', text: hasModels ? `Linked: ${linkedNames.join(', ') || 'a provider'}.` : 'Sign in to DeepSeek, Gemini or Qwen once, in a Chrome window that opens for you. Nothing here goes to a server of ours.', action: hasModels ? null : btn('Link an account', { class: 'primary', onclick: () => show('accounts', { focus: true }) }, 'link') },
+        { id: 'link', done: hasModels, title: 'Link an account', text: hasModels ? `Linked: ${linkedNames.join(', ') || 'a provider'}.` : 'Link a DeepSeek, Gemini or Qwen account once in a Chrome window that opens for you, or paste a Bike4Mind API key. Nothing here goes to a server of ours.', action: hasModels ? null : btn('Link an account', { class: 'primary', onclick: () => show('accounts', { focus: true }) }, 'link') },
         { id: 'key', done: st.keys.length > 0, title: 'Make or copy an API key', text: st.keys.length ? `${plural(st.keys.length, 'key')} made. Show it again any time on the API page.` : 'Your own code needs a key to call this server. Make one, then copy it.', action: st.keys.length ? btn('Go to API keys', { onclick: () => show('api', { focus: true }) }, 'key') : btn('Go to API keys', { class: hasModels ? 'primary' : '', onclick: () => show('api', { focus: true }) }, 'key') },
         { id: 'try', done: tried, title: 'Try it', text: tried ? 'A request has gone through.' : 'Send a message here, or connect a tool such as Lens Code or Cline.',
           action: h('div', { class: 'row' }, btn('Say hello', { class: hasModels && !tried ? 'primary' : '', disabled: !hasModels, onclick: () => { input.value = 'Say hello in five words.'; autosize(); input.focus(); } }, 'chat'), btn('Connect a tool', { onclick: () => show('api', { focus: true }) }, 'code')) }
@@ -899,8 +899,27 @@
   const HOW = {
     deepseek: 'Opens a Chrome window so you can sign in to chat.deepseek.com yourself. The session is kept on this computer and used for each request. Answers come from the same models the website uses.',
     gemini: 'Opens Chrome on a private profile so you can sign in to gemini.google.com yourself. Chat then runs in that Chrome, in the background. Your requests show up in your Gemini activity like any chat you typed.',
-    qwen: 'Opens Chrome with a dedicated profile so you can sign in to chat.qwen.ai yourself. Chat requests use Qwen\'s normal message box in that browser, which stays open while the bridge runs. Complete any verification checks yourself. This is unofficial, not Qwen\'s official API.'
+    qwen: 'Opens Chrome with a dedicated profile so you can sign in to chat.qwen.ai yourself. Chat requests use Qwen\'s normal message box in that browser, which stays open while the bridge runs. Complete any verification checks yourself. This is unofficial, not Qwen\'s official API.',
+    bike4mind: 'Uses your own Bike4Mind API key. Make a key in your Bike4Mind account under Profile, then API Keys, and paste it here. Requests go to Bike4Mind\'s official API and use that account\'s credits. No browser window is involved.'
   };
+
+  /** The key is the login, and it is spent: its consent says both, in the same dialog shape as the Chrome providers use. */
+  function consentKey(provider) {
+    return modal(`Link ${provider.name}`, (finish) => {
+      const ok = h('input', { type: 'checkbox', id: 'consent-key-ok' });
+      const go = btn('Use this API key', { class: 'primary', disabled: true, onclick: () => finish(true) });
+      ok.addEventListener('change', () => { go.disabled = !ok.checked; });
+      return [
+        h('h2', { class: 'dlg-title', text: `Link ${provider.name}` }),
+        h('ul', { class: 'plain-list' },
+          h('li', { text: `The key is made in your own ${provider.name} account. This program keeps it on this computer and sends it only to app.bike4mind.com.` }),
+          h('li', { text: 'Every request is billed in credits in that account. Requests are paced and capped here, but each one still spends credits; watch the balance in your account.' }),
+          h('li', { text: 'You can revoke the key in your account at any time. This program cannot undo the credits an answer used.' }),
+          h('li', { text: 'Use a key you can afford to spend, and keep it out of anything you share.' })),
+        h('label', { class: 'check', for: 'consent-key-ok' }, ok, h('span', { class: 'box' }), h('span', { text: 'I understand and accept this.' })),
+        h('div', { class: 'dlg-actions' }, btn('Cancel', { onclick: () => finish(false) }), go)];
+    });
+  }
 
   function ui(id) { return (S.ui[id] = S.ui[id] || {}); }
 
@@ -945,6 +964,31 @@
         linking ? btn('Cancel', { disabled: u.busy, onclick: () => act(p.id, () => admin('POST', `/providers/${p.id}/finish`, { cancel: true })) }) : null));
   }
 
+  /** The key flow: one field, and the key replaces the login. A linked account keeps the field folded away. */
+  function keyLinker(p, u) {
+    const field = h('input', {
+      type: 'password', autocomplete: 'off', id: `key-${p.id}`,
+      placeholder: p.linked ? 'Paste a new key to replace it' : 'Paste your b4m_ API key',
+      'aria-label': `${p.name} API key`
+    });
+    const submit = async () => {
+      if (!(await consentKey(p))) return;
+      const key = field.value.trim();
+      if (!key) { u.error = 'Paste an API key first.'; paint(true); return; }
+      act(p.id, async () => {
+        const r = await admin('POST', `/providers/${p.id}/token`, { token: key, consentAcknowledged: true });
+        if (r.error) throw new Error(r.error);
+        field.value = '';
+        u.note = `${p.name} is linked. Its models and credits are shown below.`;
+      });
+    };
+    const form = h('div', { class: 'stack' },
+      h('p', { class: 'small muted', text: 'Make a key in your Bike4Mind account under Profile, then API Keys (it starts with b4m_). It is kept on this computer and only sent to app.bike4mind.com; every request uses the credits in that account.' }),
+      h('div', { class: 'row nowrap' }, field, btn(p.linked && !p.expired ? 'Replace key' : 'Link account', { class: 'primary', disabled: u.busy, onclick: submit }, 'key')));
+    if (!p.linked || p.expired) return h('div', { class: 'stack-sm' }, form);
+    return h('details', { class: 'fold' }, h('summary', { text: 'Replace the API key' }), form);
+  }
+
   function sessionLine(s) {
     if (s.enabled) return `On, ${plural(s.open, 'open chat')}`;
     if (s.reason) return `Off: ${s.reason}`;
@@ -955,11 +999,12 @@
     const u = ui(p.id);
     const caps = p.capabilities || {};
     const demo = Boolean(caps.demo);
-    const status = p.linking ? ['Waiting for you', 'warn'] : !p.linked ? ['Not linked', ''] : p.expired ? ['Sign-in expired', 'bad'] : [demo ? 'Always on' : 'Linked', 'good'];
+    const withKey = caps.link === 'key';
+    const status = p.linking ? ['Waiting for you', 'warn'] : !p.linked ? ['Not linked', ''] : p.expired ? [withKey ? 'Key refused' : 'Sign-in expired', 'bad'] : [demo ? 'Always on' : 'Linked', 'good'];
     const needsLink = !demo && (!p.linked || p.expired || p.linking);
     const actions = [];
     if (!demo && !needsLink) {
-      actions.push(btn('Sign in again', {
+      if (!withKey) actions.push(btn('Sign in again', {
         disabled: u.busy, onclick: async () => {
           if (!(await consent(p))) return;
           act(p.id, async () => { const r = await admin('POST', `/providers/${p.id}/link`, { consentAcknowledged: true }); if (r.error) throw new Error(r.error); u.note = ''; });
@@ -967,7 +1012,7 @@
       }, 'link'));
       actions.push(btn('Unlink', {
         class: 'danger', disabled: u.busy, onclick: async () => {
-          const yes = await confirmDialog({ title: `Unlink ${p.name}?`, body: 'The saved session is deleted from this computer, and requests for this account stop working until you link it again. You can link it again any time.', yes: 'Unlink', danger: true });
+          const yes = await confirmDialog({ title: `Unlink ${p.name}?`, body: withKey ? 'The saved API key is deleted from this computer, and requests for this account stop working until you link it again. The key itself still exists in your Bike4Mind account.' : 'The saved session is deleted from this computer, and requests for this account stop working until you link it again. You can link it again any time.', yes: 'Unlink', danger: true });
           if (yes) act(p.id, () => admin('POST', `/providers/${p.id}/unlink`, {}));
         }
       }, 'trash'));
@@ -995,7 +1040,7 @@
             : 'A conversation stays in one chat on the provider\'s side instead of a new chat per message. New, and so far only run against stand-ins, not a real account. It switches itself off if continuing a chat fails twice in a row.' })));
     }
     let tokenBox = null;
-    if (caps.token && !demo) {
+    if (caps.token && !demo && !withKey) {
       const token = h('input', { type: 'password', placeholder: 'Paste the token', autocomplete: 'off', 'aria-label': `${p.name} session token` });
       tokenBox = h('details', { class: 'fold' }, h('summary', { text: 'Advanced: paste a session token instead' }),
         h('div', { class: 'stack' },
@@ -1026,18 +1071,24 @@
         h('div', { class: 'row' }, btn(u.reading ? (gemini ? 'Reading the picker' : `Reading ${p.name} models`) : 'Read models again', { id: `reread-${p.id}`, class: 'sm', disabled: u.busy || off, 'aria-busy': u.reading ? 'true' : undefined, onclick: reread }, 'retry')),
         u.reading ? h('p', { class: 'small muted', role: 'status', text: gemini ? 'Opening Gemini\'s page to read the picker. This can take up to 20 seconds.' : `Reading the model list available to your ${p.name} account.` })
           : u.read ? h('div', { class: u.read.ok ? 'small muted' : 'notice warn', role: 'status', text: u.read.text })
-            : h('span', { class: 'hint', text: off ? 'Works once the account is linked and its sign-in is finished.' : gemini ? 'Reads the models from your Gemini account\'s own picker. It does this by itself when the list is 15 minutes old.' : `Reads the model list available to your ${p.name} account using the saved sign-in.` }));
+            : h('span', { class: 'hint', text: off ? 'Works once the account is linked and its sign-in is finished.' : gemini ? 'Reads the models from your Gemini account\'s own picker. It does this by itself when the list is 15 minutes old.' : withKey ? `Reads the model list and credit balance available to your ${p.name} API key.` : `Reads the model list available to your ${p.name} account using the saved sign-in.` }));
     }
     return h('article', { class: 'card provider stack' },
       h('div', { class: 'row between' }, h('h2', { class: 'h3', text: p.name }), chip(status[0], status[1])),
-      demo ? h('p', { class: 'muted', text: 'Answers by describing what it was sent. It needs no account: use it to try the interface and your client.' }) : h('p', { class: 'muted small', text: HOW[p.id] || 'Signs in with your own account in a Chrome window.' }),
+      demo ? h('p', { class: 'muted', text: 'Answers by describing what it was sent. It needs no account: use it to try the interface and your client.' }) : h('p', { class: 'muted small', text: HOW[p.id] || (withKey ? 'Uses an API key from your own account. No browser window is involved.' : 'Signs in with your own account in a Chrome window.') }),
       p.expired ? h('div', { class: 'notice bad', text: p.expiredReason || 'The sign-in expired. Sign in again.' }) : null,
-      needsLink ? linkStepper(p, u) : null,
+      needsLink || withKey ? (withKey ? keyLinker(p, u) : linkStepper(p, u)) : null,
       u.note ? h('div', { class: 'notice warn', text: u.note }) : null,
       u.error ? h('div', { class: 'notice bad', role: 'alert', text: u.error }) : null,
-      p.linked && !p.expired ? h('div', { class: 'models' }, (p.models || []).map((m) => chip(m.name || m.id, 'accent', m.id))) : null,
+      p.linked && !p.expired ? h('div', { class: 'models' }, (p.models || []).map((m) => chip(m.name || m.id, 'accent', withKey
+        ? [m.id, m.supportsTools ? 'tools' : 'no tools', m.supportsVision ? 'pictures' : '', m.supportsThinking ? 'thinking' : ''].filter(Boolean).join(' · ')
+        : m.id))) : null,
       readAgain,
-      p.linked && p.linkedAt ? h('dl', { class: 'kv' }, h('dt', { text: 'Linked' }), h('dd', { text: `${day(p.linkedAt)}${p.accountLabel ? ` as ${p.accountLabel}` : ''}` })) : null,
+      p.linked ? h('dl', { class: 'kv' },
+        p.linkedAt ? h('dt', { text: 'Linked' }) : null,
+        p.linkedAt ? h('dd', { text: `${day(p.linkedAt)}${p.accountLabel ? ` as ${p.accountLabel}` : ''}${p.tier ? ` · ${p.tier}` : ''}` }) : null,
+        p.credits ? h('dt', { text: 'Credits' }) : null,
+        p.credits ? h('dd', { text: `${Number(p.credits.balance).toLocaleString([], { maximumFractionDigits: 2 })}${p.credits.checkedAt ? ` · checked ${time(p.credits.checkedAt)}` : ''}` }) : null) : null,
       usageBlock(p),
       actions.length ? h('div', { class: 'row' }, actions) : null,
       h('div', { class: 'settings-group stack' }, settings),

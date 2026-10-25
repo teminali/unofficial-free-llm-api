@@ -57,14 +57,59 @@ function trailingRepeat(messages) {
   return { count, label };
 }
 
-function contentToText(content) {
+const IMAGE_NOTE = '[image omitted by the bridge]';
+const IMAGE_TYPES = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/jpg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' };
+const IMAGE_MARK = /\[attached image (\d+)\]/g;
+
+const isImagePart = (part) => Boolean(part) && typeof part === 'object' && (part.type === 'image_url' || part.type === 'input_image');
+
+/** The picture an image part holds, { mime, ext, bytes, hash }, or null. Only a picture sent inline (a data: URL) is read: the bridge never goes to an address a client names. */
+function pictureOf(part) {
+  const raw = part && (typeof part.image_url === 'string' ? part.image_url : part.image_url && part.image_url.url);
+  const m = /^data:(image\/[a-z+.-]+);base64,([A-Za-z0-9+/=\s]+)$/i.exec(String(raw || ''));
+  if (!m) return null;
+  const mime = m[1].toLowerCase();
+  const bytes = Buffer.from(m[2].replace(/\s+/g, ''), 'base64');
+  if (!IMAGE_TYPES[mime] || !bytes.length) return null;
+  return { mime, ext: IMAGE_TYPES[mime], bytes, hash: crypto.createHash('sha256').update(bytes).digest('hex') };
+}
+
+/**
+ * The pictures of one request, numbered in the order they first appear in the whole conversation (the same picture, byte for byte, keeps its number), so a
+ * picture is called the same thing in the first message of a chat and in a later one that continues it. A picture is written into the prompt as
+ * `[attached image N]`; `inPrompt(text)` is the pictures whose marker a prompt holds, which is what has to be sent along with that prompt. A provider that
+ * cannot take pictures simply never gets one of these, and its prompt says the picture was left out.
+ */
+function createPictures() {
+  const byHash = new Map();
+  const all = [];
+  const take = (part) => {
+    const pic = pictureOf(part);
+    if (!pic) return null;
+    let found = byHash.get(pic.hash);
+    if (!found) { found = { ...pic, n: all.length + 1 }; byHash.set(pic.hash, found); all.push(found); }
+    return `[attached image ${found.n}]`;
+  };
+  return {
+    take,
+    scan(content) { if (Array.isArray(content)) for (const part of content) if (isImagePart(part)) take(part); },
+    inPrompt(text) {
+      const seen = new Set();
+      for (const m of String(text || '').matchAll(IMAGE_MARK)) seen.add(Number(m[1]));
+      return all.filter((p) => seen.has(p.n));
+    },
+    get count() { return all.length; }
+  };
+}
+
+function contentToText(content, pictures = null) {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
     return content.map((part) => {
       if (typeof part === 'string') return part;
       if (!part || typeof part !== 'object') return '';
       if (typeof part.text === 'string') return part.text;
-      if (part.type === 'image_url' || part.type === 'input_image') return '[image omitted by the bridge]';
+      if (isImagePart(part)) return (pictures && pictures.take(part)) || IMAGE_NOTE;
       return '';
     }).filter(Boolean).join('\n');
   }
@@ -232,7 +277,9 @@ function fingerprint(message) {
       return `${f.name || ''}\u0001${args ? stableJson(args) : String(f.arguments || '')}`;
     }).join('\u0002');
   }
-  return shortHash(`${role}\u0000${contentToText(m.content).trim()}\u0000${calls}`);
+  // A picture is part of what a message says: two messages that differ only in the picture are not the same message.
+  const pics = Array.isArray(m.content) ? m.content.filter(isImagePart).map((p) => { const pic = pictureOf(p); return pic ? pic.hash : 'x'; }).join(',') : '';
+  return shortHash(`${role}\u0000${contentToText(m.content).trim()}\u0000${calls}\u0000${pics}`);
 }
 
 /**
@@ -351,14 +398,17 @@ function buildPrompt(messages, tools, options = {}) {
   const list = Array.isArray(messages) ? messages : [];
   const hasTools = Array.isArray(tools) && toolDefs(tools).length > 0;
   const json = jsonInstruction(options.jsonMode);
+  const pictures = options.images || null;
   const system = list.filter((m) => m && m.role === 'system').map((m) => contentToText(m.content)).filter(Boolean).join('\n\n');
   const talk = list.filter((m) => m && m.role !== 'system');
+  // Every picture is numbered by the whole conversation, also those in messages a continued chat already holds, so a number means the same picture in every message.
+  if (pictures) for (const m of talk) pictures.scan(m.content);
   const cont = options.continuation && Number.isInteger(options.continuation.from) ? options.continuation : null;
   const shown = cont ? talk.slice(cont.from) : talk;
   // A plain question with nothing around it goes as it is: a framed transcript is only needed when there is something to frame. A caller that asks for
   // a closing line of its own (options.closing, the question put to a thinking mode) always gets it.
   if (!hasTools && !json && !options.closing && shown.length === 1 && shown[0].role === 'user' && (cont || talk.length === 1)) {
-    return [cont ? '' : system, contentToText(shown[0].content)].filter(Boolean).join('\n\n');
+    return [cont ? '' : system, contentToText(shown[0].content, pictures)].filter(Boolean).join('\n\n');
   }
   const bridge = options.bridge || bridgeSection;
   const noToolsHint = hasTools ? (options.noToolsHint || TOOLS_HINT) : PLAIN_HINT;
@@ -373,7 +423,7 @@ function buildPrompt(messages, tools, options = {}) {
   const transcript = [];
   for (const m of shown) {
     if (m.role === 'user') {
-      transcript.push(`USER:\n${contentToText(m.content)}`);
+      transcript.push(`USER:\n${contentToText(m.content, pictures)}`);
       continue;
     }
     if (m.role === 'assistant') {
@@ -394,7 +444,7 @@ function buildPrompt(messages, tools, options = {}) {
     }
     if (m.role === 'tool' || m.role === 'function') {
       const name = names.get(String(m.tool_call_id || '')) || String(m.name || 'tool');
-      let result = contentToText(m.content);
+      let result = contentToText(m.content, pictures);
       if (result.length > TOOL_RESULT_CAP) result = `${result.slice(0, TOOL_RESULT_CAP)}\n[result shortened by the bridge]`;
       transcript.push(`TOOL RESULT (${name}):\n${result}`);
     }
@@ -409,6 +459,18 @@ function buildPrompt(messages, tools, options = {}) {
   return sections.filter(Boolean).join('\n\n');
 }
 
+/**
+ * A model now and then wraps the whole argument object in one more "arguments" layer (a DSML parameter of that name, or the same key nested in its JSON).
+ * A tool never has a parameter called "arguments", so when that is the only parameter and it holds an object, the object is the call's arguments.
+ */
+function unwrapArguments(args) {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return args;
+  const keys = Object.keys(args);
+  if (keys.length !== 1 || keys[0] !== 'arguments') return args;
+  const inner = typeof args.arguments === 'string' ? tryJson(args.arguments) : args.arguments;
+  return inner && typeof inner === 'object' && !Array.isArray(inner) ? inner : args;
+}
+
 function callFrom(value, allowed) {
   let obj = typeof value === 'string' ? closedJson(value.replace(/<\/?\s*(?:｜|\|){2}\s*DSML[\s\S]*?>/gi, '').trim()) : value;
   if (obj && obj.function && typeof obj.function === 'object') obj = { name: obj.function.name, arguments: obj.function.arguments };
@@ -416,7 +478,7 @@ function callFrom(value, allowed) {
   let name = String(obj.name || obj.tool || obj.tool_name || '');
   name = normalizeToolName(name, allowed);
   if (!name || (allowed && allowed.size && !allowed.has(name))) return null;
-  const args = parseArgs(obj.arguments != null ? obj.arguments : obj.parameters != null ? obj.parameters : obj.args) || {};
+  const args = unwrapArguments(parseArgs(obj.arguments != null ? obj.arguments : obj.parameters != null ? obj.parameters : obj.args) || {});
   return { name, arguments: JSON.stringify(args) };
 }
 
@@ -501,11 +563,16 @@ function dsmlBlocks(source) {
 
 /** The parameters of one DSML block, in the arguments shape the OpenAI protocol uses. */
 function callsInDsml(body, allowed) {
+  // A model now and then closes a tag where it opens one ("</｜｜DSML｜｜ parameter name="x" ...>"). Read as an opening tag: otherwise the parameter
+  // before it runs on to the next real closer, and its value swallows the rest of the call (a file path with markup in it, an edit that never lands).
+  const source = String(body || '').replace(new RegExp(`<\\s*\\/\\s*(${DSML_MARK}\\s*DSML\\s*${DSML_MARK}\\s*)(parameter|invoke)(\\s+name\\s*=)`, 'gi'), '<$1$2$3');
   const invoke = new RegExp(`<\\s*${DSML_MARK}\\s*DSML\\s*${DSML_MARK}\\s*invoke\\s+name\\s*=\\s*["']([^"']+)["']\\s*>([\\s\\S]*?)<\\/\\s*${DSML_MARK}\\s*DSML\\s*${DSML_MARK}\\s*invoke\\s*>`, 'gi');
-  const parameter = new RegExp(`<\\s*${DSML_MARK}\\s*DSML\\s*${DSML_MARK}\\s*parameter\\s+name\\s*=\\s*["']([^"']+)["'](?:\\s+string\\s*=\\s*["'](true|false)["'])?\\s*>([\\s\\S]*?)<\\/\\s*${DSML_MARK}\\s*DSML\\s*${DSML_MARK}\\s*parameter\\s*>`, 'gi');
+  // A value ends at its own closing tag; a missing one ends it at the next parameter or invoke (a value that runs into the next tag belongs to neither).
+  const nextTag = `<\\s*${DSML_MARK}\\s*DSML\\s*${DSML_MARK}\\s*(?:parameter|invoke)\\b`;
+  const parameter = new RegExp(`<\\s*${DSML_MARK}\\s*DSML\\s*${DSML_MARK}\\s*parameter\\s+name\\s*=\\s*["']([^"']+)["'](?:\\s+string\\s*=\\s*["'](true|false)["'])?\\s*>([\\s\\S]*?)(?:(<\\/\\s*${DSML_MARK}\\s*DSML\\s*${DSML_MARK}\\s*parameter\\s*>)|(?=${nextTag})|$)`, 'gi');
   const out = [];
   let match;
-  while ((match = invoke.exec(body))) {
+  while ((match = invoke.exec(source))) {
     let name = match[1];
     name = normalizeToolName(name, allowed);
     if (!name || (allowed && allowed.size && !allowed.has(name))) continue;
@@ -516,12 +583,12 @@ function callsInDsml(body, allowed) {
       const key = p[1];
       if (!key) continue;
       const flag = p[2];
-      const raw = p[3];
+      const raw = p[4] ? p[3] : p[3].replace(/\s+$/, ''); // ended at the next tag: the whitespace before it belongs to the markup
       if (flag === 'true') { args[key] = raw; continue; }
       const parsed = tryJson(raw);
       args[key] = parsed == null ? raw : parsed;
     }
-    out.push({ name, arguments: JSON.stringify(args) });
+    out.push({ name, arguments: JSON.stringify(unwrapArguments(args)) });
   }
   return out;
 }
@@ -657,6 +724,6 @@ function bodyHold(text, bare) {
 
 module.exports = {
   buildPrompt, parseAnswer, markerHold, bareHold, fenceHold, bodyHold, opensCall, unreadableCall, thinkRequest, trailingRepeat, callSignature,
-  bridgeSection, fencedBridgeSection, jsonInstruction, contentToText, parseArgs, taskKeyOf, withThoughts, toolDefs, hasFileTools, closedJson, tryJson,
+  bridgeSection, fencedBridgeSection, jsonInstruction, contentToText, createPictures, pictureOf, IMAGE_NOTE, parseArgs, taskKeyOf, withThoughts, toolDefs, hasFileTools, closedJson, tryJson,
   stableJson, fingerprint, conversationFingerprints, toolsKey
 };

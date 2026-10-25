@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { buildPrompt, parseAnswer, markerHold, unreadableCall, fencedBridgeSection, jsonInstruction, trailingRepeat } = require('../src/bridge');
+const { buildPrompt, parseAnswer, markerHold, unreadableCall, fencedBridgeSection, jsonInstruction, trailingRepeat, createPictures, pictureOf, fingerprint, IMAGE_NOTE } = require('../src/bridge');
 
 const TOOLS = [
   {
@@ -33,6 +33,23 @@ const TOOLS = [
     }
   }
 ];
+
+const EDIT_TOOLS = TOOLS.concat({
+  type: 'function',
+  function: {
+    name: 'edit',
+    description: 'Change part of a file',
+    parameters: {
+      type: 'object',
+      properties: {
+        filePath: { type: 'string', description: 'Relative path to file' },
+        oldString: { type: 'string', description: 'Text to replace' },
+        newString: { type: 'string', description: 'Replacement text' }
+      },
+      required: ['filePath', 'oldString', 'newString']
+    }
+  }
+});
 
 const WEATHER = [{
   type: 'function',
@@ -89,6 +106,27 @@ test('parseAnswer: accepts native DSML tool call blocks', () => {
   assert.equal(parsed.calls[0].name, 'write');
   assert.deepEqual(JSON.parse(parsed.calls[0].arguments), { filePath: 'index.html', content: '<h1>Sunrise</h1>' });
   assert.equal(parsed.content, 'Let me create the index file:');
+});
+
+test('parseAnswer: reads a closing tag written where a tag opens, and never lets a value run into the next one', () => {
+  // The model closed filePath with a closing-style tag carrying the next parameter's name and gave filePath no closer of its own.
+  const dsml = '<｜｜DSML｜｜calls><｜｜DSML｜｜invoke name="edit"><｜｜DSML｜｜parameter name="filePath" string="true">index.html\n</｜｜DSML｜｜ parameter name="oldString" string="true">old</｜｜DSML｜｜parameter><｜｜DSML｜｜parameter name="newString" string="true">new</｜｜DSML｜｜parameter></｜｜DSML｜｜invoke></｜｜DSML｜｜calls>';
+  const parsed = parseAnswer(dsml, EDIT_TOOLS);
+  assert.equal(parsed.calls.length, 1);
+  assert.equal(parsed.calls[0].name, 'edit');
+  assert.deepEqual(JSON.parse(parsed.calls[0].arguments), { filePath: 'index.html', oldString: 'old', newString: 'new' });
+});
+
+test('parseAnswer: unwraps arguments wrapped in one more "arguments" layer', () => {
+  const dsml = '<｜｜DSML｜｜calls><｜｜DSML｜｜invoke name="write"><｜｜DSML｜｜parameter name="arguments" string="true">{"filePath":"index.html","content":"hello"}</｜｜DSML｜｜parameter></｜｜DSML｜｜invoke></｜｜DSML｜｜calls>';
+  const wrapped = parseAnswer(dsml, TOOLS);
+  assert.equal(wrapped.calls.length, 1);
+  assert.deepEqual(JSON.parse(wrapped.calls[0].arguments), { filePath: 'index.html', content: 'hello' });
+
+  const nested = '<tool_call>{"name":"write","arguments":{"arguments":{"filePath":"index.html","content":"hello"}}}</tool_call>';
+  const nestedParsed = parseAnswer(nested, TOOLS);
+  assert.equal(nestedParsed.calls.length, 1);
+  assert.deepEqual(JSON.parse(nestedParsed.calls[0].arguments), { filePath: 'index.html', content: 'hello' });
 });
 
 test('parseAnswer: accepts fenced JSON and whole-response JSON tool calls', () => {
@@ -244,4 +282,59 @@ test('markerHold: raw tool markup is never emitted when held text is stripped', 
   }
   assert.ok(!emitted.includes('<tool'), 'emitted text must not contain a partial <tool');
   assert.equal(emitted, 'Starting now: ');
+});
+
+// ---- pictures --------------------------------------------------------------------------------------------------------------------------------
+
+const png = (tag) => `data:image/png;base64,${Buffer.from(`\x89PNG-standin-${tag}`).toString('base64')}`;
+const withPicture = (text, url) => ({ role: 'user', content: [{ type: 'text', text }, { type: 'image_url', image_url: { url } }] });
+
+test('pictures: only a picture sent inline is read; an address, another type or an empty picture is not', () => {
+  assert.ok(pictureOf({ type: 'image_url', image_url: { url: png('a') } }));
+  assert.ok(pictureOf({ type: 'input_image', image_url: png('a') }), 'the Responses spelling');
+  assert.equal(pictureOf({ type: 'image_url', image_url: { url: 'https://example.com/a.png' } }), null, 'the bridge never goes to an address a client names');
+  assert.equal(pictureOf({ type: 'image_url', image_url: { url: 'data:image/svg+xml;base64,PHN2Zz4=' } }), null);
+  assert.equal(pictureOf({ type: 'image_url', image_url: { url: 'data:image/png;base64,' } }), null);
+  assert.equal(pictureOf({ type: 'text', text: 'x' }), null);
+});
+
+test('pictures: without a collector the prompt says the picture was left out, as it always did', () => {
+  const prompt = buildPrompt([withPicture('What is this?', png('a'))], [], {});
+  assert.match(prompt, /What is this\?/);
+  assert.ok(prompt.includes(IMAGE_NOTE));
+  assert.ok(!/attached image/.test(prompt));
+});
+
+test('pictures: with a collector each picture is marked by its number, the same picture keeps it, and the prompt names the pictures it needs', () => {
+  const pics = createPictures();
+  const messages = [withPicture('First', png('a')), { role: 'assistant', content: 'ok' }, withPicture('Second', png('b')), withPicture('Again', png('a'))];
+  const prompt = buildPrompt(messages, [], { images: pics });
+  assert.equal(pics.count, 2, 'one picture sent twice is one picture');
+  assert.match(prompt, /First\n\[attached image 1\]/);
+  assert.match(prompt, /Second\n\[attached image 2\]/);
+  assert.match(prompt, /Again\n\[attached image 1\]/);
+  assert.ok(!prompt.includes(IMAGE_NOTE));
+  assert.deepEqual(pics.inPrompt(prompt).map((p) => p.n), [1, 2]);
+  assert.ok(Buffer.isBuffer(pics.inPrompt(prompt)[0].bytes) && pics.inPrompt(prompt)[0].mime === 'image/png');
+});
+
+test('pictures: a picture in a tool result is attached too', () => {
+  const pics = createPictures();
+  const messages = [{ role: 'user', content: 'look' }, { role: 'assistant', content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'write', arguments: '{}' } }] }, { role: 'tool', tool_call_id: 'c1', content: [{ type: 'text', text: 'the page' }, { type: 'image_url', image_url: { url: png('t') } }] }];
+  const prompt = buildPrompt(messages, TOOLS, { images: pics });
+  assert.match(prompt, /TOOL RESULT \(write\):\nthe page\n\[attached image 1\]/);
+  assert.equal(pics.inPrompt(prompt).length, 1);
+});
+
+test('pictures: a chat that continues is sent only the new picture, and the numbers still mean the same pictures', () => {
+  const pics = createPictures();
+  const messages = [withPicture('First', png('a')), { role: 'assistant', content: 'seen' }, withPicture('Second', png('b'))];
+  const prompt = buildPrompt(messages, [], { images: pics, continuation: { from: 2 } });
+  assert.match(prompt, /\[attached image 2\]/, 'the second picture is number 2, as in a chat that was started with both');
+  assert.deepEqual(pics.inPrompt(prompt).map((p) => p.n), [2], 'the first one is already in the chat');
+});
+
+test('pictures: two messages that differ only in the picture are not the same message', () => {
+  assert.notEqual(fingerprint(withPicture('Same words', png('a'))), fingerprint(withPicture('Same words', png('b'))));
+  assert.equal(fingerprint(withPicture('Same words', png('a'))), fingerprint(withPicture('Same words', png('a'))));
 });

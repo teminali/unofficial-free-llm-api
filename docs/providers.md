@@ -1,8 +1,9 @@
 # Providers
 
-The three providers are driven the way a person uses the site. Linking never sees a password: you sign in yourself, in a Chrome window.
+DeepSeek, Gemini and Qwen are driven the way a person uses the site: linking never sees a password, because you sign in yourself, in a Chrome window.
+Bike4Mind is different: it uses its own official API, and you link it by pasting an API key from your Bike4Mind account. No browser is involved.
 
-## How linking works (all three providers)
+## How linking works (DeepSeek, Gemini, Qwen)
 
 1. **Link account** opens an ordinary Chrome window on a private profile folder inside the data folder
    (`<data>/deepseek-chrome`, `gemini-chrome` or `qwen-chrome`), never your everyday profile. It is started without a debugging port, so the
@@ -77,10 +78,43 @@ Set `ULA_CHROME_PATH` if Chrome is somewhere unusual. Chromium and Edge are trie
 - The page's markup is read with selectors that Alibaba renames without notice. Every miss is logged (`ULA_DEBUG=1`); the `qwen:` lines carry stages, statuses and
   sizes, never prompts or answers.
 
+## Bike4Mind
+
+- **Its own API, with your key.** Make a key in your Bike4Mind account (Profile, then API Keys) and paste it on the Accounts page. The consent box says what
+  it means: the key stays on this computer, requests go only to `app.bike4mind.com`, every request spends the credits in that account, and revoking the key in
+  Bike4Mind stops it. Nothing opens a browser, so this lane needs no desktop and no Chrome.
+- **What linking checks.** The key is used once to read the model list (`GET /api/v1/models`), the credit balance (`GET /api/v1/credits`) and, when the key
+  allows the scope, the account name (`GET /api/v1/me`). A key Bike4Mind refuses (401) or one without the `ai:chat` scope (403) is not saved. The key and what was read
+  are kept in `bike4mind_key.json`, mode 0600, like the other sessions. Unlinking deletes that file; the key itself still exists in your Bike4Mind account until you
+  revoke it there.
+- **Models.** The ids are the ones its API reports, text models only; open models or non-text entries are left out. Each has the context size and output limit
+  its API reports, and flags for tools, vision and thinking. The list is read when you link, refreshed in the background when a client lists the models, and can be
+  forced with *Read models again* (or `POST /_/providers/bike4mind/refresh-models`, signed in). A read that fails keeps the old list.
+- **Requests.** `POST /api/ai/v1/completions` with the key in `x-api-key`, paced by the same governor as everything else (one at a time, 1 s apart, 20 a minute,
+  300 calls a day by default). The API always answers with server-sent events: `meta`, then `content` and `tool_use` events, an in-band `error` if it fails, and
+  `data: [DONE]`. The program reads it that way whether or not the caller asked to stream, and passes text on as it arrives. A `content` event may carry a delta or
+  the whole answer so far; both are reduced to the new text.
+- **Tools.** Tools are sent natively, in the shape the API documents (`tools: [{ toolSchema }]`). A native `tool_use` event is turned into the same
+  `<tool_call>{"name":…,"arguments":…}</tool_call>` text the bridge transcript uses, so a client sees ordinary OpenAI `tool_calls`. A model whose model entry says
+  it does not call tools refuses a request that offers them, before anything is spent.
+- **Why the prompt is still a transcript.** The API takes `user`, `assistant` and `system` messages but has no `tool` role, and plain system prompts are ignored.
+  So the program puts the system text and the conversation, including tool results, into one `user` message, the way it does for a website chat; only the tools are
+  sent natively. The model still gets the whole conversation on every call: Bike4Mind keeps no chat on its side.
+- **Thinking and pictures.** `reasoning_effort` maps to the API's `options.reasoningEffort` (low, medium, high); a thinking model is also asked to think with
+  `options.thinking`. Inline pictures (`data:` URLs) go as native image parts when the chosen model supports vision: up to 8, 10 MB each, 20 MB of base64 in one
+  request (the API refuses a body over 25 MB). A model without vision, or a picture over those limits, is told in the prompt that it cannot see it.
+- **Credits and refusals.** The balance shown on the Accounts card is read from the API at linking, with *Read models again*, after each request's own credit
+  event, and again after ten quiet minutes. The daily cap limits calls, not spending: every request bills the account. `422 insufficient_credits` ends the request
+  with that message; a 429 pauses requests for at least a minute, or as long as its `Retry-After` says, and nothing is retried around it. An answer cut by the
+  model's own output limit comes back as `finish_reason: "length"`.
+
 ## Running with no desktop (server, container)
 
-Linking needs a window. Link on your computer, then copy the provider's session folder into the server's data folder:
+Linking needs a window for DeepSeek, Gemini and Qwen. Link on your computer, then copy the provider's session folder into the server's data folder:
 `deepseek_session.json` for DeepSeek, or `gemini_session.json` plus `gemini-chrome/` for Gemini. A server needs Chrome installed for Gemini. Qwen is not
 supported without a desktop: its Chrome window must stay open and visible while requests run, so copying `qwen_session.json` and `qwen-chrome/` to a headless
 server is not enough. A session copied to another machine or address may be signed out by the provider. This is not tested, and is the first thing to try if you
 need it.
+
+Bike4Mind needs none of that: open the web interface of the running copy (through an SSH tunnel if the port is not reachable) and paste the key there, or copy
+`bike4mind_key.json` from a machine that has it. Its key is not tied to a browser profile or a machine.
