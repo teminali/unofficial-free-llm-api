@@ -303,11 +303,15 @@ function streamReader(pat, onDelta) {
     onDelta({ type: kind, text: added });
   };
   const take = (line) => {
-    const text = String(line || '').trim();
-    if (!text) return;
     let event;
-    try { event = JSON.parse(text); } catch (_) { return; }
-    if (!event || typeof event !== 'object') return;
+    if (line && typeof line === 'object') {
+      event = line;
+    } else {
+      const text = String(line || '').trim();
+      if (!text) return null;
+      try { event = JSON.parse(text); } catch (_) { return null; }
+    }
+    if (!event || typeof event !== 'object') return null;
     if (event.type === 'stream_event' && event.event && typeof event.event === 'object') {
       const inner = event.event;
       if (inner.type === 'content_block_delta' && inner.delta && typeof inner.delta === 'object') {
@@ -469,5 +473,5 @@ async function chat({ cliPath, pat, configDir, model, prompt, thinking, thinking
 
 module.exports = {
   LIST_TIMEOUT_MS, CHAT_TIMEOUT_MS, EXPIRED, KEY_HINT, CLI_MISSING, UNREACHABLE, EMPTY_MODELS,
-  cleanKey, findCli, childEnv, redact, runCli, parseModelList, listModels, effortArgs, chat
+  cleanKey, findCli, childEnv, redact, runCli, parseModelList, listModels, effortArgs, chat, describeFailure, streamReader
 };

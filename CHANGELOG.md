@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.7.0 (2026-10-26)
+
+### Changed
+
+- **Qoder keeps one chat per conversation.** The first request of a conversation starts one `qoder --print` process with its input held open; each follow-up goes in as
+  one new message, so the CLI's startup is paid once instead of on every call. Follow-ups are also given only the new messages, not the whole transcript. At most three
+  chats are kept, each closed after ten idle minutes, twenty-four requests or 150,000 characters; a request that changes the model, the effort, the tools or an earlier
+  message starts a new process. The chat lives in that process only: `--no-session-persistence` is still passed, so no transcript is written to disk, and stopping the
+  program, unlinking or linking a different token closes the chats. A CLI that refuses the stream-json input falls back to one process per request for that run.
+  `--no-sessions`, `ULA_SESSIONS=0` or the Accounts page switch keeps the old behaviour. The kept-chat path is covered by `test/qoder_warm.test.js` against the stand-in CLI.
+
 ## 0.6.0 (2026-10-26)
 
 ### Added

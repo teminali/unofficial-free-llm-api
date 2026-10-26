@@ -86,7 +86,10 @@ different `user` / `X-ULA-Session` name. The usage numbers still count the whole
 
 Chats are closed after 20 minutes without a request, when more than 6 are open, when one grows past about 150,000 characters or 80 requests, and when the program
 stops. The DeepSeek chats this program created are deleted; a chat it did not create is never touched. Turn this off with `--no-sessions`, `ULA_SESSIONS=0` or the switch
-on the Accounts page. Qoder has no chat on its side: its requests take the whole conversation every time, so sessions do not apply there.
+on the Accounts page. Qoder applies the same idea with one CLI process per conversation instead of a chat on its side: the first request starts it, each follow-up carries
+only the new messages, and at most three are open, each closed after ten idle minutes, twenty-four requests or 150,000 characters. The chat lives in that process only;
+the CLI is told not to persist a session, so no transcript is written to disk, and a process that ends is replaced by a new chat on the next request. A CLI that refuses
+the stream-json input flag falls back to one process per request.
 
 ### Errors
 

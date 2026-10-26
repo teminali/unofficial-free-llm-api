@@ -76,11 +76,23 @@ async function boot({ link = true, token = PAT, state = {}, cli = true } = {}) {
   const runs = () => readState().runs || [];
   const chatRuns = () => runs().filter((run) => run.args.includes('--print'));
   const listRuns = () => runs().filter((run) => run.args.includes('--list-models'));
+  const turnEvents = () => {
+    try {
+      return fs.readFileSync(`${statePath}.events`, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line));
+    } catch (_) { return []; }
+  };
+  /** What the CLI was asked on its first turn: the plain stdin body of a one-shot run, or the first JSONL message of a kept chat. */
+  const promptOf = (run) => {
+    if (!run) return '';
+    if (!run.args.includes('--input-format')) return run.stdin;
+    const turn = turnEvents().find((entry) => entry.event === 'turn' && entry.pid === run.pid);
+    return turn ? turn.text : '';
+  };
 
   return {
     dir, wrapper, statePath, logs, config, provider, server, base: info.url, apiKey, linked,
     post, send: (body) => post('/v1/chat/completions', body),
-    readState, setState, runs, chatRuns, listRuns,
+    readState, setState, runs, chatRuns, listRuns, turnEvents, promptOf,
     async close() { await server.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
   };
 }
@@ -162,10 +174,11 @@ test('a plain question is one message on stdin, answered as one string', async (
 
     const chats = ui.chatRuns();
     assert.equal(chats.length, 1);
-    assert.equal(chats[0].stdin, 'hi');
+    assert.equal(ui.promptOf(chats[0]), 'hi');
     assert.equal(argAfter(chats[0], '--model'), 'qmodel_preview');
     assert.equal(argAfter(chats[0], '--tools'), '');
     assert.equal(argAfter(chats[0], '--output-format'), 'stream-json');
+    assert.equal(argAfter(chats[0], '--input-format'), 'stream-json');
     assert.equal(chats[0].args.includes('--include-partial-messages'), true);
     assert.equal(chats[0].args.includes('--no-session-persistence'), true);
     assert.equal(argAfter(chats[0], '--max-model-request-retries'), '0');
@@ -237,7 +250,7 @@ test('tools are a text bridge: the call goes in the prompt and comes back as a t
     assert.equal(args.filePath, 'a.txt');
     assert.equal(data.choices[0].finish_reason, 'tool_calls');
 
-    const prompt = ui.chatRuns()[0].stdin;
+    const prompt = ui.promptOf(ui.chatRuns()[0]);
     assert.match(prompt, /# Tool bridge/);
     assert.match(prompt, /### read/);
     assert.match(prompt, /read a\.txt/);
@@ -253,7 +266,7 @@ test('a picture is left out in words because the CLI lane cannot carry one', asy
       messages: [{ role: 'user', content: [{ type: 'text', text: 'what is this' }, { type: 'image_url', image_url: { url: PNG } }] }]
     });
     assert.equal(res.status, 200);
-    const prompt = ui.chatRuns()[0].stdin;
+    const prompt = ui.promptOf(ui.chatRuns()[0]);
     assert.match(prompt, /what is this/);
     assert.match(prompt, /\[image omitted by the bridge\]/);
     assert.equal(prompt.includes('data:image'), false);
@@ -438,7 +451,7 @@ test('the token never appears in a log, the state page, or the command line', as
     const chat = ui.chatRuns()[0];
     assert.equal(chat.pat, PAT);
     assert.equal(chat.args.join(' ').includes(PAT), false);
-    assert.equal(chat.stdin.includes(PAT), false);
+    assert.equal(ui.promptOf(chat).includes(PAT), false);
 
     assert.equal(ui.logs.some((line) => line.includes(PAT)), false);
     assert.equal(JSON.stringify(await ui.provider.status()).includes(PAT), false);

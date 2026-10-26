@@ -45,7 +45,7 @@ Set `ULA_CHROME_PATH` if Chrome is somewhere unusual. Chromium and Edge are trie
 ## Qoder
 
 - **The official Qoder CLI, with your personal access token.** Qoder's model server cannot be called directly with a personal token: the catalog and the model
-  calls are signed by the CLI's own handshake. So this program drives the official Qoder CLI, one process per request. Install it with
+  calls are signed by the CLI's own handshake. So this program drives the official Qoder CLI, one process per conversation while chats are kept. Install it with
   `npm install -g @qoder-ai/qodercli`; make a token at [qoder.com/account/integrations](https://qoder.com/account/integrations), then paste it on the Accounts
   page. The token stays on this computer and is handed only to that CLI, in its environment, never on a command line or in a log. Nothing opens a browser.
 - **What linking checks.** The CLI is asked for the models this token can call (`qoder --list-models`) in a private config folder inside the data folder
@@ -57,23 +57,28 @@ Set `ULA_CHROME_PATH` if Chrome is somewhere unusual. Chromium and Edge are trie
   display name. The list is read when you link; a list younger than ten minutes is reused, a list read by a client listing the models starts a background read when it
   is older than that, and *Read models again* (or `POST /_/providers/qoder/refresh-models`, signed in) forces one. A list in
   a shape the bridge does not read is an error, never a guessed list. The CLI publishes no context sizes, so every model lists the 128000 working size.
-- **Requests.** One `qoder --print` process per request: the prompt on stdin, no built-in tools, `--no-session-persistence`, and the isolated config folder. The
-  answer comes from the CLI's JSON output. The bridge asks for its `stream-json` output with partial messages when the CLI knows them, so text and thinking stream
-  as they arrive; a CLI version that refuses those flags is asked again for the plain JSON envelope. Paced by the same governor as everything else (one at a
-  time, 1 s apart, 20 a minute, 300 calls a day by default), with a timeout of ten minutes per call.
+- **Requests.** A conversation runs one `qoder --print` process with its input kept open: the bridge asks for `stream-json` input and output, so the first prompt
+  starts the process and each later message goes in as one JSON line. Text and thinking stream as partial events when the CLI knows them; a CLI that refuses
+  `--include-partial-messages` or `stream-json` output is asked again in the plainer shape. A CLI that refuses `--input-format` is not asked for a warm chat again in
+  that run: every request gets its own process with the prompt on stdin. Every run has no built-in tools, `--no-session-persistence`, and the isolated config folder.
+  Paced by the same governor as everything else (one at a time, 1 s apart, 20 a minute, 300 calls a day by default), with a timeout of ten minutes per call.
+- **A kept chat lives in memory.** The first request of a conversation pays for the CLI to start; follow-ups on the same process take a few seconds. At most three
+  chats are kept, each ends after ten idle minutes, twenty-four requests or 150,000 characters, and a request that changes the model, the effort, the tools or an
+  earlier message starts a new process. A process takes roughly 450 to 500 MB while idle and up to about 900 MB while answering. Linking a different token, unlinking
+  and stopping the program close the chats. If a process dies between turns, the next request starts a new chat with the whole conversation. Nothing is written to disk.
 - **Tools, thinking and pictures.** There is no native tool handoff: tools go in the prompt as the text protocol the account-backed providers use
   (`<tool_call>{"name":"...","arguments":{...}}</tool_call>`), and the calls are read back and returned as `tool_calls`. `reasoning_effort` becomes the CLI's own
   `--reasoning-effort` (low, medium, high, xhigh, max); `none` becomes `--thinking disabled`, and a model whose thinking cannot be switched off gets
   `--thinking enabled` when no effort was asked. A CLI run is text only, so a picture is replaced by a note in the prompt, and `temperature` has no flag: it is
   named in `X-ULA-Ignored`.
-- **Why the prompt is still a transcript.** The CLI is given one prompt, so the whole conversation, including tool results, goes in it, with the tool bridge when
-  tools are offered. Qoder keeps no chat on its side between calls, and the CLI is told not to persist a session.
+- **Why the prompt is still a transcript.** A new chat is given the whole conversation, including tool results, with the tool bridge when tools are offered; a
+  continuation is given only the new messages. The CLI is told not to persist a session, so the conversation exists only in that process.
 - **Refusals.** A token the CLI refuses marks the account refused; its models are cleared, and the next request says the model is unknown until a new token is
   pasted. A rate limit pauses requests for a minute; the CLI gives no `Retry-After`. An answer the CLI stops at its output limit comes back as
   `finish_reason: "length"`. The CLI's own message is passed on in words, with the token scrubbed.
-- **First call is slow.** A CLI process starts from cold, so the first call takes longer than the ones after it. A client whose connection test gives up in 15 or 20
-  seconds can report a timeout while a normal chat would have worked; raise that client's own timeout. `unofficial-free-llm-api log` prints when the CLI first wrote
-  anything and when the answer ended, without words.
+- **First call is slow.** A CLI process starts from cold, so the first call of a conversation takes about fifteen seconds. Later messages go to the same process and
+  answer in a few seconds. A client whose connection test gives up in 15 or 20 seconds can report a timeout while a normal chat would have worked; raise that client's
+  own timeout. `unofficial-free-llm-api log` prints when the CLI first wrote anything and when the answer ended, without words.
 
 ## Running with no desktop (server, container)
 

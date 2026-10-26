@@ -17,7 +17,7 @@ This process holds logins to personal accounts, so it is built around one questi
 | A client that leaves | A request whose client goes away while it waits for its turn is dropped before anything is sent upstream. One that leaves after the message went out still counts toward the daily and per-minute limits, because the account was spent |
 | A redirect from the provider's address | Requests to DeepSeek never follow redirects, so the prompt or the login is not sent on to another address. This program makes no HTTP request for Qoder at all: the token is handed only to the official CLI, in its environment |
 | Secrets in logs | Only metadata is logged or kept: model, status, time, sizes, the key's name. Never a prompt, an answer, a token or a cookie. `unofficial-free-llm-api log` (and `GET /_/log`, which needs the sign-in or the admin token) shows the last 300 lines the providers logged, held in memory and never written to disk, with keys and token-like strings scrubbed once more. The DeepSeek lane logs the names of a stream's events, never the words. The Qoder lane logs only statuses and timings, and scrubs the token from anything the CLI said |
-| What sessions remember | To continue a provider chat the program keeps, in memory, one short hash for each message and the provider's chat id: never the words. The chat ids that are open are also written to `sessions-deepseek.json` in mode 0600, so a chat left by a killed program is removed the next time; that file holds ids, nothing else |
+| What sessions remember | To continue a provider chat the program keeps, in memory, one short hash for each message and the provider's chat id: never the words. The DeepSeek chat ids that are open are also written to `sessions-deepseek.json` in mode 0600, so a chat left by a killed program is removed the next time; that file holds ids, nothing else. A Qoder chat has no id to remember: it is a live CLI process, in memory only, holding the conversation |
 | What `previous_response_id` remembers | `/v1/responses` keeps the messages of the last 64 responses **in memory** for 30 minutes (so a caller can send only the new input). They are never written anywhere, and `store: false` keeps nothing |
 | A huge request | Bodies over 16 MB are answered `413` after the upload is drained |
 | Traffic that would hurt the account | The governor (see the README) paces, caps, queues and pauses; the first provider refusal stops all calls until the pause ends |
@@ -38,6 +38,10 @@ never on its command line, and it is scrubbed from the CLI's output before anyth
 data folder; that state is as secret as the token. The program passes none of your other logins to it: `QODER_*`, `QODERCN_*`, `CLAUDE_CODE_*` and `GEMINI_*`
 variables from this shell are removed first, so a Qoder Desktop or other agent session is neither read nor changed. The CLI makes the requests to Qoder; this
 program never calls Qoder's servers itself.
+
+A conversation keeps one CLI process open between turns, so the token stays in that process's environment for as long as the chat is. The process is closed after
+ten idle minutes, twenty-four turns or a grown transcript, and when the chat, the link or the program ends; at most three are kept, at about 450 to 500 MB each.
+The CLI is told not to persist a session, so the conversation is in the process's memory and not on disk.
 
 ## The admin token
 

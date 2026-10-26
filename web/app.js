@@ -1034,11 +1034,14 @@
       const stopped = !s.enabled && Boolean(s.reason); // it switched itself off; the person can switch it on again
       const sw = h('input', { type: 'checkbox', role: 'switch', checked: Boolean(s.enabled), disabled: u.busy, id: `sessions-${p.id}`, 'aria-describedby': `sessions-hint-${p.id}` });
       sw.addEventListener('change', () => act(p.id, () => admin('PUT', `/providers/${p.id}/settings`, { sessions: sw.checked })));
+      const what = p.id === 'qoder'
+        ? 'A conversation keeps one Qoder CLI process open, so a follow-up message skips the startup instead of paying it again. It switches itself off if continuing a chat fails twice in a row.'
+        : 'A conversation stays in one chat on the provider\'s side instead of a new chat per message. It switches itself off if continuing a chat fails twice in a row.';
       settings.push(h('div', { class: 'field sessions' },
         h('label', { class: 'switch' }, sw, h('span', { class: 'track' }), h('span', { class: 'switch-text' }, h('strong', { text: 'One chat per conversation' }), h('span', { class: `status-line ${s.enabled ? 'on' : 'off'}`, text: sessionLine(s) }))),
         h('span', { class: 'hint', id: `sessions-hint-${p.id}`, text: stopped
           ? 'It switched itself off so that nothing is spent on a setting that does not work. Switch it on to try again.'
-          : 'A conversation stays in one chat on the provider\'s side instead of a new chat per message. It switches itself off if continuing a chat fails twice in a row.' })));
+          : what })));
     }
     let tokenBox = null;
     if (caps.token && !demo && !withKey) {

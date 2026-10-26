@@ -85,11 +85,12 @@ Ids can also be written `deepseek/deepseek-chat` or `qoder/<id>`. `reasoning_eff
 A web chat takes one text message and answers with text. For every request the bridge:
 
 1. **Checks the governor**: a cooldown, the daily cap or a full queue is answered at once with `429` and `Retry-After`, and nothing is sent upstream.
-2. **Finds the chat** (DeepSeek only). An API request carries the whole conversation every time. If its first messages are exactly what an open chat on the account already holds,
+2. **Finds the chat.** An API request carries the whole conversation every time. If its first messages are exactly what an open chat already holds,
    the request is a continuation: it goes into that chat and carries only what is new. Anything else (an edited message, other tools, another model) starts a new chat.
-   One conversation is one chat, like a person's. Qoder is a fresh CLI run every time, so it takes the whole conversation on every call.
+   One conversation is one chat, like a person's. DeepSeek keeps that chat on its side; Qoder keeps one CLI process open, so a follow-up skips the startup instead of paying it again.
 3. **Builds the message**: for a new DeepSeek chat, the system text, the transcript and, when you send `tools`, a short bridge that asks the model for a call in a plain
-   format (a request with no tools is sent as it is); for a continued chat, just the new messages. Qoder gets the whole conversation as one prompt, with the same text tool bridge.
+   format (a request with no tools is sent as it is); for a continued chat, just the new messages. A new Qoder chat gets the whole conversation as one prompt, with the same text
+   tool bridge; a continuation sends only the new messages.
 4. **Asks the account** (DeepSeek: its web endpoints with your saved session and its proof-of-work; Qoder: the official CLI,
    `qoder --print`, with your personal token in its environment), one request at a time, paced.
 5. **Reads the answer** back into OpenAI shape: text, `reasoning_content`, `tool_calls`. A tool call is read from every shape these chats were seen
@@ -98,8 +99,10 @@ A web chat takes one text message and answers with text. For every request the b
    website lane's, and its own output limit becomes `finish_reason: "length"`.
 
 DeepSeek chats are removed when their conversation ends (20 minutes without a request, at most 6 open, or a chat grown long), and when the program stops. That covers the chats
-this program created; other DeepSeek chats are never touched. Qoder's CLI run is told not to persist a session. Name a conversation
-with the `user` field or an `X-ULA-Session` header if you want it kept apart. `--no-sessions` (or `ULA_SESSIONS=0`) goes back to one new chat for every request.
+this program created; other DeepSeek chats are never touched. Qoder's chat is a live CLI process, held in memory and never on disk: the CLI is told not to persist a session,
+at most three chats are open, and each ends after ten idle minutes, twenty-four requests, or a grown transcript (150,000 characters). A request that changes the model, the effort,
+the tools or an earlier message starts a new process. Name a conversation with the `user` field or an `X-ULA-Session` header if you want it kept apart. `--no-sessions`
+(or `ULA_SESSIONS=0`, or the switch on the Accounts page) goes back to one new chat for every request.
 
 Linking DeepSeek never sees your password: you sign in yourself, in a Chrome window, and the bridge keeps the session that results. Qoder works differently: you paste a personal access token, which is never put on a command line or sent by this program over HTTP; it is handed only to the official Qoder CLI, in that process's environment, and the CLI makes the signed requests to Qoder.
 
@@ -108,13 +111,13 @@ Linking DeepSeek never sees your password: you sign in yourself, in a Chrome win
 | What | How |
 |---|---|
 | Pace | DeepSeek: one request at a time, at least 4 s apart, at most 10 a minute (it waits, it does not fail). Qoder: 1 s apart, 20 a minute, and the provider's own rate limit is obeyed |
-| One chat per conversation | A DeepSeek conversation stays in one provider chat instead of opening (and deleting) a chat for every message. If continuing a chat fails twice in a row, it switches itself off and says so. Qoder is one fresh CLI process per request |
+| One chat per conversation | A DeepSeek conversation stays in one provider chat instead of opening (and deleting) a chat for every message. A Qoder conversation keeps one CLI process open (at most three, in memory only, each closed after ten idle minutes), so a follow-up skips the CLI's startup. If continuing a chat fails twice in a row, it switches itself off and says so |
 | Daily cap | 300 calls a day per account by default; change it on the Accounts page. This caps calls, not credits: Qoder counts each request against your plan |
 | First refusal stops everything | A rate limit, a mute or a human check sets a cooldown (20 min for DeepSeek; Qoder pauses for at least a minute, since its CLI gives no `Retry-After`); a mute lasts as long as DeepSeek says. A token Qoder's CLI refuses is marked refused, and its model list is cleared |
 | No retry storms | Retrying a muted account only makes it worse, so there is none; a cut-off call is retried once, an empty answer once, and a connection that failed before the message went out once (nothing was spent). A connection that breaks mid-answer is an error in words, never half an answer |
 | Loop guard | An agent that repeats the same step three times in a row is stopped before another call is spent |
 | Local only | Listens on `127.0.0.1`; other hosts are refused; a key is required for `/v1`; the web interface needs an admin token, which it trades for a session cookie (HttpOnly, SameSite=Strict, checked against the origin) |
-| Secrets | Sessions and config are mode 0600 in a 0700 folder; config.json keeps each API key (so you can copy it again) next to the admin token that can make keys; a Qoder personal access token is kept in `qoder_key.json`, mode 0600, and handed only to the official Qoder CLI, in its environment, never on a command line; the CLI's own state is in a 0700 `qoder-cli/` folder; only metadata is ever logged, with the token scrubbed |
+| Secrets | Sessions and config are mode 0600 in a 0700 folder; config.json keeps each API key (so you can copy it again) next to the admin token that can make keys; a Qoder personal access token is kept in `qoder_key.json`, mode 0600, and handed only to the official Qoder CLI, in its environment, never on a command line; the CLI's own state is in a 0700 `qoder-cli/` folder; a kept Qoder chat is a live CLI process in memory, never a transcript on disk; only metadata is ever logged, with the token scrubbed |
 
 Details in [docs/security.md](docs/security.md).
 
@@ -142,16 +145,18 @@ Running on a server with no desktop? Qoder needs none: paste the personal access
 Alpha. What has been run, honestly:
 
 - The bridge, the server, the governor and the web interface have automated tests (`npm test`) that run against stand-ins: a scripted provider, a local copy of
-  DeepSeek's endpoints (which can drop connections and break streams on request), and a script that behaves like the Qoder CLI (its model list, its JSON and stream-json output, and
-  each way it refuses).
+  DeepSeek's endpoints (which can drop connections and break streams on request), and a script that behaves like the Qoder CLI (its model list, its one-shot and kept chats in JSON
+  and stream-json, and each way it refuses).
 - **Run by the author on their own real accounts:** on 2026-10-22, linking DeepSeek, chatting in the playground, a three-message DeepSeek conversation
   that stayed in one DeepSeek chat, and switching models (which starts another chat). DeepSeek answered in 3 to 8 seconds. On 2026-10-26, linking Qoder with a real
-  personal access token and the official CLI: its 14 models were read, and chat completions came back through the local API with thinking on and off.
+  personal access token and the official CLI: its 14 models were read, and chat completions came back through the local API with thinking on and off. A three-message
+  Qoder conversation through the running relay stayed in one kept chat: the first answer took 17.1 s, the follow-ups 5.5 s and 4.7 s, the open CLI process took about
+  490 MB, thinking disabled sent no reasoning while high effort sent reasoning, and ending the chat closed the process.
 - **Not yet run against a real account:** an agent sending `tools`, long conversations, a day of steady use, `selftest --yes`, the Anthropic and
   Responses APIs with their own clients, and the no-desktop setup. Reusing one chat per conversation is built to fail safe (a chat that cannot be continued is given
   up and the request is asked again on a new chat; two such failures in a row switch it off), but only short real conversations have shown it work. An issue with what you
-  saw (the lines from `unofficial-free-llm-api log`, no prompts) is the most useful contribution there is. A client's own test button may give up before the Qoder CLI answers its
-  first call; the first run pays for the CLI starting up, so a longer client timeout helps, and a normal chat has no such wall.
+  saw (the lines from `unofficial-free-llm-api log`, no prompts) is the most useful contribution there is. A client's own test button may give up before the Qoder CLI answers the
+  first call of a conversation; that call pays for the CLI starting up, so a longer client timeout helps, and later messages in the same conversation answer in a few seconds.
 - Pictures: DeepSeek takes pictures sent inline (a `data:` URL in a user or tool message) as attached files, the newest four of a message, each up to 10 MB; a picture that cannot go is said to the model in the prompt. What DeepSeek's chat does with a picture (read its text, or look at it) is DeepSeek's, not this program's. Qoder's CLI run is text only, so a picture is replaced by a note; the Anthropic and Responses APIs, and a picture given as an address (never fetched), also become a note.
 - Not supported: `top_p`/`seed` and the like (named in an `X-ULA-Ignored` response header, not silently dropped; `temperature` is ignored by both providers), `max_tokens`/`stop` when tools are sent (honoured for a plain chat), `n > 1` (refused), embeddings, function-call strictness. Token counts are estimates (characters / 4).
 - Providers change their sites without notice. When one breaks, [open an issue](../../issues).

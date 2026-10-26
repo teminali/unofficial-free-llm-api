@@ -1,8 +1,9 @@
 /**
  * The Qoder provider: the person's own Qoder account, through a personal access token and the official Qoder CLI, behind the chat engine and a governor.
  *
- * The CLI is the only client Qoder lets use the token for model calls, so every request is one `qoder --print` process (cli.js). Tools are a text protocol
- * in the prompt (bridge.js); the CLI has no native tool handoff, no temperature, and no pictures here. Thinking and effort are the CLI's own flags.
+ * The CLI is the only client Qoder lets use the token for model calls. A conversation keeps one CLI process (warm.js), so a follow-up costs about three
+ * seconds instead of fifteen; with sessions off, every request is one `qoder --print` process (cli.js). Tools are a text protocol in the prompt (bridge.js);
+ * the CLI has no native tool handoff, no temperature, and no pictures here. Thinking and effort are the CLI's own flags.
  */
 'use strict';
 
@@ -12,7 +13,7 @@ const { createGovernor } = require('../../governor');
 const { withContext } = require('../../model_info');
 const { bridgeSection } = require('../../bridge');
 const { createQoderAccount } = require('./account');
-const { createQoderWeb } = require('./web');
+const { createQoderWeb, SESSION_OPTIONS } = require('./web');
 const { CHAT_TIMEOUT_MS } = require('./cli');
 
 const NOT_A_LINK = 'Qoder links with a personal access token: paste one in the token field. No browser window is involved.';
@@ -22,8 +23,10 @@ function createQoderProvider({ dataDir, config, log = () => {}, bus = null, cliP
   const governor = createGovernor({ storagePath: path.join(dataDir, 'usage-qoder.json'), providerName: 'Qoder', dailyCap: saved.dailyCap, log });
   const account = createQoderAccount({ dataDir, cliPath, governor, log });
   const web = createQoderWeb({ account, cliPath, log });
+  const useSessions = saved.sessions !== false && process.env.ULA_SESSIONS !== '0';
 
   const engine = createChatEngine({
+    sessions: { enabled: useSessions, options: SESSION_OPTIONS },
     provider: {
       id: 'qoder',
       name: 'Qoder',
@@ -44,16 +47,24 @@ function createQoderProvider({ dataDir, config, log = () => {}, bus = null, cliP
   const provider = {
     id: 'qoder',
     name: 'Qoder',
-    capabilities: { link: 'key', key: true, refreshModels: true, settings: ['dailyCap'] },
+    capabilities: { link: 'key', key: true, refreshModels: true, settings: ['dailyCap', 'sessions'] },
     engine,
     governor,
     account,
     models: () => account.listModels().map(withContext),
-    status: () => account.status(),
+    async status() { return { ...(await account.status()), sessions: engine.sessionInfo() }; },
     startLink: () => Promise.resolve({ ok: false, error: NOT_A_LINK }),
     finishLink: () => Promise.resolve({ ok: false, error: NOT_A_LINK }),
-    linkToken: (options) => account.linkToken(options),
-    unlink: () => account.unlink(),
+    // A different token or no account: every open chat belongs to the old one.
+    async linkToken(options) {
+      const out = await account.linkToken(options);
+      if (out && out.ok) await engine.closeSessions();
+      return out;
+    },
+    async unlink() {
+      await engine.closeSessions();
+      return account.unlink();
+    },
     refreshModels: (options) => account.refreshModels(options),
     resetUsage: () => governor.resetUsage(),
     async setSettings(patch = {}) {
@@ -63,11 +74,17 @@ function createQoderProvider({ dataDir, config, log = () => {}, bus = null, cliP
         governor.setDailyCap(n);
         if (config) config.setProviderSettings('qoder', { dailyCap: n });
       }
+      if (patch.sessions !== undefined) {
+        const on = patch.sessions === true;
+        await engine.setSessions(on);
+        if (config) config.setProviderSettings('qoder', { sessions: on });
+      }
       return provider.status();
     },
-    async stop() { await account.stop(); }
+    async stop() { await engine.closeSessions(); await account.stop(); }
   };
   return provider;
 }
 
 module.exports = { createQoderProvider };
+
