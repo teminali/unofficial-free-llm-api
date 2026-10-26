@@ -205,7 +205,7 @@ test('a key provider links with a pasted key, folds the field away, and shows it
     ui.click([...card().querySelectorAll('button')].find((b) => b.textContent === 'Link account'));
     const dialog = ui.$('dialog');
     assert.ok(dialog.hasAttribute('open'));
-    assert.match(dialog.textContent, /billed in credits/);
+    assert.match(dialog.textContent, /credits or plan allowance/);
     const go = [...dialog.querySelectorAll('button')].find((b) => b.textContent === 'Use this API key');
     assert.equal(go.disabled, true, 'the button stays off until the box is ticked');
     const tick = dialog.querySelector('input[type="checkbox"]');
@@ -706,8 +706,6 @@ test('Accounts: "One chat per conversation" is a switch with an honest hint and 
     assert.match(card.querySelector('.status-line').textContent, /^On, 2 open chats$/);
     const hint = card.querySelector(`#${sw.getAttribute('aria-describedby')}`).textContent;
     assert.match(hint, /new/i);
-    assert.match(hint, /stand-ins/);
-    assert.match(hint, /not a real account/);
     assert.match(hint, /fails twice in a row/);
     // switching it off sends the setting and the status line follows
     sw.checked = false;
@@ -903,16 +901,17 @@ test('the page never builds markup from strings and loads nothing from outside',
   assert.ok(!/(href|src)="https?:/.test(html), 'no external files');
 });
 
-// ---- a Gemini-shaped provider: stable names, a working context size, and a model list that can be read again ----------------------------------------
+// ---- a provider whose model list can be read again: working context sizes, and a button that reads it ---------------------------------------------
 
 const PICKER_ROWS = () => [ // deliberately not in the order the page must show them
-  { id: 'gemini-3-5-flash-lite', name: '3.5 Flash-Lite', thinking: true, escalate: false, context_length: 128000 },
-  { id: 'gemini-auto', name: 'Gemini Auto (account default)', thinking: true, escalate: false, context_length: 128000 },
-  { id: 'gemini', name: 'Gemini (account default)', thinking: true, escalate: false, context_length: 128000 }
+  { id: 'picker-3-5-flash-lite', name: '3.5 Flash-Lite', thinking: true, escalate: false, context_length: 128000 },
+  { id: 'picker-auto', name: 'Picker Auto (account default)', thinking: true, escalate: false, context_length: 128000 },
+  { id: 'picker', name: 'Picker (account default)', thinking: true, escalate: false, context_length: 128000 }
 ];
-const geminiLike = (f, rows = PICKER_ROWS()) => {
-  f.id = 'gemini';
-  f.name = 'Gemini';
+const pickerLike = (f, rows = PICKER_ROWS()) => {
+  f.id = 'picker';
+  f.name = 'Picker';
+  f.capabilities = { ...f.capabilities, refreshModels: true };
   f.rows = rows;
   f.rereads = 0;
   f.reread = { refreshed: true, add: [], delayMs: 0, linking: false };
@@ -925,14 +924,14 @@ const NOT_A_KEY = /sk-ula|•/; // the start of every key this program makes, an
 const blockOf = (ui) => ui.$('[data-view="api"] .paste-block');
 const blockText = (ui) => blockOf(ui).querySelector('pre').textContent;
 
-test('API page: "Copy for Lens Code, Cline and similar" is one box of plain words with the models in state, the stable names first, and never a key', { skip }, async () => {
-  const ui = await open({ hash: '#api', provider: (f) => geminiLike(f), setup: ({ config }) => { config.createApiKey('block key'); } });
+test('API page: "Copy for Lens Code, Cline and similar" is one box of plain words with the models in state and never a key', { skip }, async () => {
+  const ui = await open({ hash: '#api', provider: (f) => pickerLike(f), setup: ({ config }) => { config.createApiKey('block key'); } });
   try {
-    assert.ok(await until(() => blockOf(ui) && /gemini/.test(blockText(ui))));
+    assert.ok(await until(() => blockOf(ui) && /picker/.test(blockText(ui))));
     assert.equal(blockOf(ui).querySelector('h3').textContent, 'Copy for Lens Code, Cline and similar');
     const expected = ['Name: Unofficial Free LLM API', `Address: ${ui.base}/v1`, 'Key: paste your key here',
-      'Models: gemini, gemini-auto, gemini-3-5-flash-lite', 'Context: 128000 (a working size, not the model\'s maximum)'].join('\n');
-    assert.equal(blockText(ui), expected, 'the stable names come first, then the picker\'s own rows in their order');
+      'Models: picker-3-5-flash-lite, picker-auto, picker', 'Context: 128000 (a working size, not the model\'s maximum)'].join('\n');
+    assert.equal(blockText(ui), expected, 'the models are in the order the provider lists them');
     assert.equal(blockOf(ui).querySelectorAll('button').length, 1, 'one Copy button for the whole block');
     assert.equal(blockOf(ui).querySelector('button').textContent, 'Copy');
     // the key is picked and shown in full elsewhere on the page: it is in none of the block, and not in what Copy takes
@@ -964,56 +963,56 @@ test('API page: the Context line of the copy block is left out when no model has
     assert.deepEqual(blockText(bare).split('\n').map((l) => l.split(':')[0]), ['Name', 'Address', 'Key', 'Models']);
     assert.match(blockText(bare), /\nModels: fake-chat, fake-reasoner, fake-auto$/);
   } finally { await bare.close(); }
-  const mixed = await open({ hash: '#api', provider: (f) => geminiLike(f, [
-    { id: 'gemini', name: 'G', thinking: true, escalate: false, context_length: 200000 },
-    { id: 'gemini-auto', name: 'A', thinking: true, escalate: false, context_length: 64000 },
-    { id: 'gemini-x', name: 'X', thinking: true, escalate: false }
+  const mixed = await open({ hash: '#api', provider: (f) => pickerLike(f, [
+    { id: 'picker', name: 'G', thinking: true, escalate: false, context_length: 200000 },
+    { id: 'picker-auto', name: 'A', thinking: true, escalate: false, context_length: 64000 },
+    { id: 'picker-x', name: 'X', thinking: true, escalate: false }
   ]) });
   try {
-    assert.ok(await until(() => blockOf(mixed) && /gemini-x/.test(blockText(mixed))));
+    assert.ok(await until(() => blockOf(mixed) && /picker-x/.test(blockText(mixed))));
     assert.match(blockText(mixed), /\nContext: 64000 \(a working size, not the model's maximum\)$/);
   } finally { await mixed.close(); }
 });
 
 test('API page: the models table has a Context column that stays a labelled card on a phone', { skip }, async () => {
-  const ui = await open({ hash: '#api', provider: (f) => geminiLike(f, [
-    { id: 'gemini', name: 'G', thinking: true, escalate: false, context_length: 128000 },
-    { id: 'gemini-big', name: 'B', thinking: true, escalate: false, context_length: 1000000 },
-    { id: 'gemini-none', name: 'N', thinking: true, escalate: false }
+  const ui = await open({ hash: '#api', provider: (f) => pickerLike(f, [
+    { id: 'picker', name: 'G', thinking: true, escalate: false, context_length: 128000 },
+    { id: 'picker-big', name: 'B', thinking: true, escalate: false, context_length: 1000000 },
+    { id: 'picker-none', name: 'N', thinking: true, escalate: false }
   ]) });
   try {
     assert.ok(await until(() => ui.$('.models-table')));
     assert.deepEqual([...ui.$$('.models-table thead th')].map((th) => th.textContent), ['Model id', 'Provider', 'Good for', 'Context', '']);
     const cell = (id) => [...ui.$$('.models-table tbody tr')].find((tr) => tr.textContent.includes(id)).querySelector('td[data-label="Context"]');
-    assert.equal(cell('gemini-big').textContent, '1M');
-    assert.equal(cell('gemini-none').textContent, 'unknown');
-    const c = cell('gemini').textContent;
+    assert.equal(cell('picker-big').textContent, '1M');
+    assert.equal(cell('picker-none').textContent, 'unknown');
+    const c = cell('picker').textContent;
     assert.equal(c, '128k');
-    assert.match(cell('gemini').querySelector('[title]').getAttribute('title'), /128000/, 'the exact number is one hover or one long press away');
-    assert.equal(cell('gemini').classList.contains('r'), true, 'numbers line up on the right');
+    assert.match(cell('picker').querySelector('[title]').getAttribute('title'), /128000/, 'the exact number is one hover or one long press away');
+    assert.equal(cell('picker').classList.contains('r'), true, 'numbers line up on the right');
   } finally { await ui.close(); }
 });
 
-test('Accounts: a Gemini card can read its models again, shows that it is busy, says the result in words and the API page follows', { skip }, async () => {
-  const ui = await open({ hash: '#accounts', provider: (f) => geminiLike(f) });
+test('Accounts: a provider card can read its models again, shows that it is busy, says the result in words and the API page follows', { skip }, async () => {
+  const ui = await open({ hash: '#accounts', provider: (f) => pickerLike(f) });
   try {
     const live = () => ui.$('[role="status"][aria-live="polite"]').textContent;
-    const readBtn = () => ui.$('#reread-gemini');
+    const readBtn = () => ui.$('#reread-picker');
     assert.ok(await until(() => readBtn()));
     assert.equal(readBtn().textContent, 'Read models again');
     assert.equal(readBtn().disabled, false);
     assert.ok(readBtn().classList.contains('sm'), 'a small button, like the others');
-    // it can take a while (it opens Gemini's page): the button says it is busy until the answer is back
+    // it can take a while: the button says it is busy until the answer is back
     ui.fake.reread.delayMs = 300;
-    ui.fake.reread.add = [{ id: 'gemini-3-5-flash', name: '3.5 Flash', thinking: true, escalate: false, context_length: 128000 }];
+    ui.fake.reread.add = [{ id: 'picker-3-5-flash', name: '3.5 Flash', thinking: true, escalate: false, context_length: 128000 }];
     ui.click(readBtn());
     assert.equal(readBtn().disabled, true);
     assert.equal(readBtn().getAttribute('aria-busy'), 'true');
     assert.match(readBtn().textContent, /^Reading/);
-    assert.match(ui.$('[data-view="accounts"] article').textContent, /can take up to 20 seconds/);
-    assert.ok(await until(() => /Models read again: 4 rows/.test(ui.$('[data-view="accounts"] article').textContent)), `the result is on the card: ${ui.$('[data-view="accounts"] article').textContent}`);
-    assert.ok(await until(() => /Models read again: 4 rows/.test(live())), 'and in the live region');
-    assert.deepEqual(ui.sent.filter((r) => r.method === 'POST' && /refresh-models/.test(r.path)).map((r) => [r.path, r.body]), [['/_/providers/gemini/refresh-models', {}]]);
+    assert.match(ui.$('[data-view="accounts"] article').textContent, /Reading the model list available to your Picker account/);
+    assert.ok(await until(() => /Picker account models read again: 4 models/.test(ui.$('[data-view="accounts"] article').textContent)), `the result is on the card: ${ui.$('[data-view="accounts"] article').textContent}`);
+    assert.ok(await until(() => /Picker account models read again: 4 models/.test(live())), 'and in the live region');
+    assert.deepEqual(ui.sent.filter((r) => r.method === 'POST' && /refresh-models/.test(r.path)).map((r) => [r.path, r.body]), [['/_/providers/picker/refresh-models', {}]]);
     assert.equal(ui.fake.rereads, 1);
     assert.equal(readBtn().disabled, false);
     assert.equal(readBtn().getAttribute('aria-busy'), null);
@@ -1021,33 +1020,33 @@ test('Accounts: a Gemini card can read its models again, shows that it is busy, 
     assert.ok(await until(() => ui.$$('.models .chip').length === 4), 'the new row is among the model chips');
     // the API page's block follows the models that are now in state
     ui.click([...ui.$$('nav button')].find((b) => /^API/.test(b.textContent)));
-    assert.ok(await until(() => blockOf(ui) && /gemini-3-5-flash/.test(blockText(ui))));
-    assert.match(blockText(ui), /\nModels: gemini, gemini-auto, gemini-3-5-flash-lite, gemini-3-5-flash\n/);
-    assert.ok([...ui.$$('.models-table tbody tr')].some((tr) => /gemini-3-5-flash(?!-)/.test(tr.textContent)), 'and so is the models table');
-    // the other outcome: the picker could not be read and the list stays as it was
+    assert.ok(await until(() => blockOf(ui) && /picker-3-5-flash/.test(blockText(ui))));
+    assert.match(blockText(ui), /\nModels: picker-3-5-flash-lite, picker-auto, picker, picker-3-5-flash\n/);
+    assert.ok([...ui.$$('.models-table tbody tr')].some((tr) => /picker-3-5-flash(?!-)/.test(tr.textContent)), 'and so is the models table');
+    // the other outcome: the list could not be read and stays as it was
     ui.click([...ui.$$('nav button')].find((b) => /^Accounts/.test(b.textContent)));
     ui.fake.reread.refreshed = false;
     ui.fake.reread.add = [];
     ui.click(readBtn());
-    assert.ok(await until(() => /Could not read the picker; the list stays as it was/.test(ui.$('[data-view="accounts"] article').textContent)));
-    assert.ok(await until(() => /Could not read the picker; the list stays as it was/.test(live())));
-    assert.ok(!/Models read again/.test(ui.$('[data-view="accounts"] article').textContent), 'the old good result is not left beside the new bad one');
+    assert.ok(await until(() => /Could not read your Picker account's model list; the list stays as it was/.test(ui.$('[data-view="accounts"] article').textContent)));
+    assert.ok(await until(() => /Could not read your Picker account's model list; the list stays as it was/.test(live())));
+    assert.ok(!/Picker account models read again/.test(ui.$('[data-view="accounts"] article').textContent), 'the old good result is not left beside the new bad one');
     assert.equal(ui.fake.rereads, 2);
     assert.equal(ui.$$('.models .chip').length, 4, 'the list is as it was');
     assert.equal(readBtn().disabled, false, 'and it can be tried again');
   } finally { await ui.close(); }
 });
 
-test('Accounts: "Read models again" is off while linking and when not linked, and only a provider that can read its picker has it', { skip }, async () => {
-  const unlinked = await open({ hash: '#accounts', provider: (f) => { geminiLike(f); f.script.linked = false; } });
+test('Accounts: "Read models again" is off while linking and when not linked, and only a provider that can read its models has it', { skip }, async () => {
+  const unlinked = await open({ hash: '#accounts', provider: (f) => { pickerLike(f); f.script.linked = false; } });
   try {
-    assert.ok(await until(() => unlinked.$('#reread-gemini')));
-    assert.equal(unlinked.$('#reread-gemini').disabled, true, 'not linked');
+    assert.ok(await until(() => unlinked.$('#reread-picker')));
+    assert.equal(unlinked.$('#reread-picker').disabled, true, 'not linked');
   } finally { await unlinked.close(); }
-  const linking = await open({ hash: '#accounts', provider: (f) => { geminiLike(f); f.reread.linking = true; } });
+  const linking = await open({ hash: '#accounts', provider: (f) => { pickerLike(f); f.reread.linking = true; } });
   try {
-    assert.ok(await until(() => linking.$('#reread-gemini')));
-    assert.equal(linking.$('#reread-gemini').disabled, true, 'a window is open for sign-in');
+    assert.ok(await until(() => linking.$('#reread-picker')));
+    assert.equal(linking.$('#reread-picker').disabled, true, 'a window is open for sign-in');
   } finally { await linking.close(); }
   const other = await open({ hash: '#accounts' });
   try {
@@ -1057,28 +1056,28 @@ test('Accounts: "Read models again" is off while linking and when not linked, an
 });
 
 test('Accounts: when the read fails outright the error is shown in words and the button comes back', { skip }, async () => {
-  const ui = await open({ hash: '#accounts', provider: (f) => geminiLike(f) });
+  const ui = await open({ hash: '#accounts', provider: (f) => pickerLike(f) });
   const real = ui.window.fetch;
   ui.window.fetch = async (input, init = {}) => (String(input).endsWith('/refresh-models')
-    ? new Response(JSON.stringify({ error: { message: 'Gemini\'s page did not open.' } }), { status: 502, headers: { 'content-type': 'application/json' } })
+    ? new Response(JSON.stringify({ error: { message: 'Picker\'s page did not open.' } }), { status: 502, headers: { 'content-type': 'application/json' } })
     : real(input, init));
   try {
-    assert.ok(await until(() => ui.$('#reread-gemini')));
-    ui.click(ui.$('#reread-gemini'));
-    assert.ok(await until(() => ui.$('[data-view="accounts"] article [role="alert"]') && /Gemini's page did not open/.test(ui.$('[data-view="accounts"] article [role="alert"]').textContent)));
-    assert.equal(ui.$('#reread-gemini').disabled, false);
-    assert.equal(ui.$('#reread-gemini').textContent, 'Read models again');
-    assert.ok(!/Models read again/.test(ui.$('[data-view="accounts"] article').textContent));
+    assert.ok(await until(() => ui.$('#reread-picker')));
+    ui.click(ui.$('#reread-picker'));
+    assert.ok(await until(() => ui.$('[data-view="accounts"] article [role="alert"]') && /Picker's page did not open/.test(ui.$('[data-view="accounts"] article [role="alert"]').textContent)));
+    assert.equal(ui.$('#reread-picker').disabled, false);
+    assert.equal(ui.$('#reread-picker').textContent, 'Read models again');
+    assert.ok(!/account models read again/.test(ui.$('[data-view="accounts"] article').textContent));
   } finally { await ui.close(); }
 });
 
-test('the real server answers POST /_/providers/gemini/refresh-models with { ok, refreshed, models } and says not_supported for a provider that cannot', { skip }, async () => {
-  const ui = await open({ provider: (f) => geminiLike(f) });
+test('the real server answers POST /_/providers/picker/refresh-models with { ok, refreshed, models } and says not_supported for a provider that cannot', { skip }, async () => {
+  const ui = await open({ provider: (f) => pickerLike(f) });
   try {
     const ask = async (id) => { const res = await ui.window.fetch(`/_/providers/${id}/refresh-models`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }); return { status: res.status, body: await res.json() }; };
-    const ok = await ask('gemini');
+    const ok = await ask('picker');
     assert.equal(ok.status, 200);
-    assert.deepEqual([ok.body.ok, ok.body.refreshed, ok.body.models.map((m) => m.id)], [true, true, ['gemini-3-5-flash-lite', 'gemini-auto', 'gemini']]);
+    assert.deepEqual([ok.body.ok, ok.body.refreshed, ok.body.models.map((m) => m.id)], [true, true, ['picker-3-5-flash-lite', 'picker-auto', 'picker']]);
   } finally { await ui.close(); }
   const plain = await open();
   try {
@@ -1096,7 +1095,7 @@ const withKeptChats = (ui, build) => {
     if (String(input) !== '/_/state') return res;
     const data = await res.json();
     const tag = ui.sent.filter((r) => r.path === '/v1/chat/completions').map((r) => r.body.user)[0] || null;
-    data.providers = [...data.providers, { id: 'deepseek', name: 'DeepSeek' }, { id: 'gemini', name: 'Gemini' }];
+    data.providers = [...data.providers, { id: 'deepseek', name: 'DeepSeek' }, { id: 'qoder', name: 'Qoder' }];
     data.sessions = tag ? build(tag) : [];
     return new Response(JSON.stringify(data), { status: 200, headers: { 'content-type': 'application/json' } });
   };
@@ -1106,19 +1105,19 @@ test('the footer says which chats hold the conversation: one chat by its provide
   const several = await open();
   try {
     withKeptChats(several, (tag) => [
-      { id: 'g1', tag, turns: 1, provider: 'gemini' }, { id: 'd1', tag, turns: 2, provider: 'deepseek' }, { id: 'd2', tag, turns: 1, provider: 'deepseek' },
-      { id: 'x1', tag: 'playground-other', turns: 9, provider: 'gemini' }
+      { id: 'q1', tag, turns: 1, provider: 'qoder' }, { id: 'd1', tag, turns: 2, provider: 'deepseek' }, { id: 'd2', tag, turns: 1, provider: 'deepseek' },
+      { id: 'x1', tag: 'playground-other', turns: 9, provider: 'qoder' }
     ]);
     await until(() => several.$$('select option').length >= 3);
     await send(several, 'hello');
     assert.ok(await until(() => /kept in/.test(several.$('.convo').textContent)), several.$('.convo').textContent);
     const text = several.$('.convo').textContent;
-    assert.match(text, /kept in 3 chats \(Gemini 1, DeepSeek 2\)/, 'the chats of this conversation, by provider, the one used last first: ' + text);
+    assert.match(text, /kept in 3 chats \(Qoder 1, DeepSeek 2\)/, 'the chats of this conversation, by provider, the one used last first: ' + text);
     assert.ok(!/one DeepSeek chat/.test(text), 'it no longer names only the first chat it finds: ' + text);
   } finally { await several.close(); }
   const one = await open();
   try {
-    withKeptChats(one, (tag) => [{ id: 'd1', tag, turns: 2, provider: 'deepseek' }, { id: 'x1', tag: 'playground-other', turns: 9, provider: 'gemini' }]);
+    withKeptChats(one, (tag) => [{ id: 'd1', tag, turns: 2, provider: 'deepseek' }, { id: 'x1', tag: 'playground-other', turns: 9, provider: 'qoder' }]);
     await until(() => one.$$('select option').length >= 3);
     await send(one, 'hello');
     assert.ok(await until(() => /kept in/.test(one.$('.convo').textContent)));

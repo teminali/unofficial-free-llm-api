@@ -3,7 +3,7 @@
  * text and tool calls. No network and no provider in here, only strings.
  *
  * A web chat has no native tool calling, so the tool schemas of a request go into the prompt, the model is asked to answer with a call in a plain format
- * (<tool_call>{...}</tool_call> for DeepSeek, one fenced JSON block for Gemini), and what comes back is read for calls in every shape these chats have been
+ * (<tool_call>{...}</tool_call> for DeepSeek, one fenced JSON block), and what comes back is read for calls in every shape these chats have been
  * seen to use (the tag, DeepSeek's own DSML markup, a fenced or bare JSON object, a call that lost its closing characters to a cut-off stream). A tool
  * result in the next request is rendered into the transcript for the model. Only tools that were offered are ever accepted, and a request that offered
  * none never has a tool call read out of its answer.
@@ -33,7 +33,7 @@ function callSignature(call) {
 /**
  * How many tool calls at the very end of the conversation aim at the same thing, with nothing but their results between them. A person's message
  * or the model's own words end the run (so "continue" starts afresh). A model that has finished but keeps calling the same tool on the same file is
- * looping (seen on Gemini: forty rewrites of one file, a call on a personal account each).
+ * looping (seen on a real account: forty rewrites of one file, a call on a personal account each).
  */
 function trailingRepeat(messages) {
   let key = null;
@@ -350,7 +350,7 @@ function bridgeSection(tools, options = {}) {
 }
 
 /**
- * The tool bridge as one fenced JSON block (Gemini's page). Its chat shows every reply as formatted text, and outside a code block that drops backslashes and
+ * The tool bridge as one fenced JSON block (for a page whose chat shows every reply as formatted text). Outside a code block that page drops backslashes and
  * anything that looks like HTML, which breaks a call, so the call goes in a code block, where the text is shown as written.
  */
 function fencedBridgeSection(tools, options = {}) {
@@ -478,7 +478,20 @@ function callFrom(value, allowed) {
   let name = String(obj.name || obj.tool || obj.tool_name || '');
   name = normalizeToolName(name, allowed);
   if (!name || (allowed && allowed.size && !allowed.has(name))) return null;
-  const args = unwrapArguments(parseArgs(obj.arguments != null ? obj.arguments : obj.parameters != null ? obj.parameters : obj.args) || {});
+  const explicit = obj.arguments != null ? obj.arguments : obj.parameters != null ? obj.parameters : obj.args;
+  let args;
+  if (explicit != null) {
+    args = unwrapArguments(parseArgs(explicit) || {});
+  } else {
+    const rest = { ...obj };
+    delete rest.name;
+    delete rest.tool;
+    delete rest.tool_name;
+    delete rest.id;
+    delete rest.type;
+    delete rest.function;
+    args = Object.keys(rest).length ? unwrapArguments(parseArgs(rest) || rest) : {};
+  }
   return { name, arguments: JSON.stringify(args) };
 }
 

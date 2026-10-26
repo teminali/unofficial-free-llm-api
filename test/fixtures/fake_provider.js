@@ -71,6 +71,10 @@ function createFakeProvider({ dir, bus = null, id = 'fake', name = 'Fake', pace 
         expiredReason: script.expired ? `Your ${name} session has expired. Sign in again on the Accounts page.` : null,
         models: provider.models(),
         ...(Number.isFinite(script.credits) ? { credits: { balance: script.credits, checkedAt: new Date().toISOString() } } : {}),
+        ...(keyLink ? {
+          keyPlaceholder: 'Paste your b4m_ API key',
+          keyHint: 'Make a key in your Bike4Mind account under Profile, then API Keys (it starts with b4m_). It is kept on this computer and only sent to app.bike4mind.com; every request uses the credits in that account.'
+        } : {}),
         usage: governor.getStats()
       };
     },

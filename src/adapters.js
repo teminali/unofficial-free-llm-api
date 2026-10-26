@@ -153,7 +153,7 @@ function anthropicToChat(body) {
     messages,
     ...(tools.length ? { tools } : {}),
     ...(body.tool_choice && body.tool_choice.type === 'none' ? { tool_choice: 'none' } : {}),
-    ...(budget ? { reasoning_effort: budget <= 2000 ? 'low' : (budget <= 8000 ? 'medium' : 'high') } : {}),
+    ...(budget ? { reasoning_effort: budget <= 2000 ? 'low' : (budget <= 8000 ? 'medium' : 'high') } : (body.thinking && body.thinking.type === 'disabled' ? { reasoning_effort: 'none' } : {})),
     ...(Number.isInteger(body.max_tokens) && body.max_tokens > 0 ? { max_tokens: body.max_tokens } : {}),
     ...(Array.isArray(body.stop_sequences) && body.stop_sequences.length ? { stop: body.stop_sequences.map(String).slice(0, 4) } : {})
   };
@@ -289,7 +289,7 @@ function responsesToChat(body, store) {
     messages,
     ...(tools.length ? { tools } : {}),
     ...(body.tool_choice === 'none' ? { tool_choice: 'none' } : {}),
-    ...(['low', 'medium', 'high', 'minimal'].includes(effort) ? { reasoning_effort: effort } : {}),
+    ...(['none', 'low', 'medium', 'high', 'minimal'].includes(effort) ? { reasoning_effort: effort } : {}),
     ...(Number.isInteger(body.max_output_tokens) && body.max_output_tokens > 0 ? { max_tokens: body.max_output_tokens } : {}),
     ...(body.text && body.text.format && body.text.format.type && body.text.format.type !== 'text' ? { response_format: { type: body.text.format.type, ...(body.text.format.type === 'json_schema' ? { json_schema: { name: body.text.format.name, schema: body.text.format.schema } } : {}) } } : {})
   };

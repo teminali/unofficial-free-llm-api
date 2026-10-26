@@ -13,7 +13,7 @@ npm run demo    # the web interface with the demo provider
 - **A fix has a check that was seen failing first.** Write the test, watch it fail on the old code, then fix. Name the general rule that broke, not just the input that showed it
   (the bridge tests are written that way: "a request with no tools never has a call read out of its answer").
 - **Providers change their sites.** If one breaks, an issue with the `ULA_DEBUG=1` log lines (they carry names and sizes, never prompts) is as good as a patch.
-  A selector that moved belongs in the lists at the top of `src/providers/gemini/page.js`.
+  A selector that moved belongs in the lists at the top of `src/providers/deepseek/page.js`.
 - **Account safety is a feature.** Do not add a way around the governor's pacing, caps or cooldowns, and do not add retries against a provider that refused.
 - **Nothing sensitive in logs, tests or fixtures.** No real tokens, cookies, emails or prompts. The stand-ins in `test/` are for that.
 - Keep the surface honest: if a feature is a prompt trick and not a native one, the docs say so.
@@ -26,9 +26,9 @@ src/server.js   HTTP: /v1, the admin API, the web interface; auth and origin che
 src/engine.js   one chat completion: governor, prompt, provider call, OpenAI-shaped answer
 src/bridge.js   text only: conversation -> prompt, answer -> text and tool calls
 src/governor.js pacing, caps, cooldowns, queue
-src/providers/  deepseek, gemini, qwen, bike4mind, demo; chrome.js and chrome_cdp.js (the shared Chrome driver)
+src/providers/  deepseek, qoder, demo; chrome.js and chrome_cdp.js (the shared Chrome driver)
 web/            the interface (no build)
-test/           node:test files, with stand-ins for DeepSeek, Gemini, Bike4Mind and the demo provider (Qwen has none yet)
+test/           node:test files, with stand-ins for DeepSeek, the Qoder CLI and the demo provider
 ```
 
 ## Pull requests

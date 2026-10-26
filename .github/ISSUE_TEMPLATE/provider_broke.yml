@@ -1,5 +1,5 @@
 name: A provider stopped working
-description: DeepSeek, Gemini or Qwen used to work and now does not
+description: DeepSeek or Qoder used to work and now does not
 labels: [provider-broke]
 body:
   - type: markdown
@@ -11,7 +11,7 @@ body:
     id: provider
     attributes:
       label: Provider
-      options: [DeepSeek, Gemini, Qwen, More than one]
+      options: [DeepSeek, Qoder, More than one]
     validations:
       required: true
   - type: textarea

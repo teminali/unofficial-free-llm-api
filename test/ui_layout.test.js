@@ -213,11 +213,12 @@ test('the real page at 320, 390, 820 and 1280 px: nothing scrolls sideways, noth
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ula-layout-'));
   const bus = new EventEmitter();
   const fake = createFakeProvider({ dir, bus });
-  // models carry their working context size, and a Gemini-shaped provider brings its "Read models again" button and the stable names into the pages measured
+  // models carry their working context size, and a second provider brings its "Read models again" button into the pages measured
   const fakeModels = fake.models;
   fake.models = () => fakeModels().map((m) => ({ ...m, context_length: 128000 }));
-  const gem = createFakeProvider({ dir, bus, id: 'gemini', name: 'Gemini' });
-  gem.models = () => ['gemini', 'gemini-auto', 'gemini-3-5-flash-lite'].map((id) => ({ id, name: id, thinking: true, escalate: false, context_length: 128000 }));
+  const picker = createFakeProvider({ dir, bus, id: 'picker', name: 'Picker' });
+  picker.capabilities = { ...picker.capabilities, refreshModels: true };
+  picker.models = () => ['picker', 'picker-auto', 'picker-3-5-flash-lite'].map((id) => ({ id, name: id, thinking: true, escalate: false, context_length: 128000 }));
   fake.capabilities = { ...fake.capabilities, settings: ['dailyCap', 'sessions'] };
   const baseStatus = fake.status;
   fake.status = async () => ({ ...(await baseStatus()), sessions: { enabled: true, reason: null, open: 2, continued: 1, started: 2, diverged: 0, failed: 0 } });
@@ -226,7 +227,7 @@ test('the real page at 320, 390, 820 and 1280 px: nothing scrolls sideways, noth
     { id: 'sBBB2', provider: 'fake', model: 'fake-auto', tag: null, turns: 1, chars: 10, createdAt: new Date().toISOString(), lastUsed: new Date().toISOString(), busy: true }
   ];
   const config = createConfig({ dataDir: dir });
-  const srv = createServer({ config, registry: createRegistry({ providers: [fake, gem], bus }), port: 0 });
+  const srv = createServer({ config, registry: createRegistry({ providers: [fake, picker], bus }), port: 0 });
   const { port } = await srv.start();
   const base = `http://127.0.0.1:${port}`;
   config.createApiKey('lens code');
@@ -261,7 +262,7 @@ test('the real page at 320, 390, 820 and 1280 px: nothing scrolls sideways, noth
           if (blk.cells < 2 || !blk.inView) all.push(`api at ${width}px: the Context cells are missing or out of view (${JSON.stringify(blk)})`);
         }
         if (view === 'accounts') {
-          const re = await page.eval(`(() => { const b = document.querySelector('#reread-gemini'); if (!b) return null; const r = b.getBoundingClientRect(); return { h: Math.round(r.height), disabled: b.disabled, inView: r.left >= 0 && r.right <= ${width} + 1 }; })()`);
+          const re = await page.eval(`(() => { const b = document.querySelector('#reread-picker'); if (!b) return null; const r = b.getBoundingClientRect(); return { h: Math.round(r.height), disabled: b.disabled, inView: r.left >= 0 && r.right <= ${width} + 1 }; })()`);
           if (!re || re.disabled || !re.inView || (phone && re.h < 44)) all.push(`accounts at ${width}px: the Read models again button is missing, off, out of view or too small (${JSON.stringify(re)})`);
         }
         // a table is a table while its card is wide (over 640 px of room) and a list of cards when it is narrow

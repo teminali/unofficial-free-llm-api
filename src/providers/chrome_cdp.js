@@ -557,7 +557,7 @@ async function launchChrome({ executablePath, userDataDir, args = [], log = () =
       }
       pages.clear();
       try { child.kill('SIGTERM'); } catch (_) { /* already gone */ }
-      // The Gemini lane deletes its profile folder right after this returns, and that folder is the session: Chrome must really
+      // A lane that deletes its profile folder right after this returns would be deleting the session itself: Chrome must really
       // be gone first, or it writes back into a folder that is meant to be gone.
       await Promise.race([exited, sleep(3000)]);
       try { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); } catch (_) {}

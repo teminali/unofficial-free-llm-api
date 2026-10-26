@@ -1,7 +1,7 @@
 {
   "name": "unofficial-free-llm-api",
-  "version": "0.5.0",
-  "description": "A local OpenAI-compatible API and web playground for the personal chat accounts you already have (DeepSeek, Gemini, Qwen), plus Bike4Mind through its official API. Unofficial.",
+  "version": "0.6.0",
+  "description": "A local OpenAI-compatible API and web playground for a DeepSeek chat account you already have, plus Qoder through its official CLI. Unofficial.",
   "license": "MIT",
   "author": "teminali",
   "homepage": "https://github.com/teminali/unofficial-free-llm-api#readme",
@@ -22,12 +22,10 @@
     "api",
     "playground",
     "deepseek",
-    "gemini",
-    "qwen",
     "unofficial",
     "proxy",
     "chat",
-    "bike4mind"
+    "qoder"
   ],
   "bin": {
     "unofficial-free-llm-api": "bin/unofficial-free-llm-api.js",

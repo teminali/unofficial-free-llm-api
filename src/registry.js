@@ -2,7 +2,7 @@
  * The registry of providers: what the server asks to find a provider by id, to list the models the linked accounts can answer with, and to turn the model
  * name in a request into one of them.
  *
- * A provider is an object with this shape (src/providers/deepseek and src/providers/gemini are the two real ones, test/fixtures/fake_provider.js a small one):
+ * A provider is an object with this shape (src/providers/deepseek and src/providers/qoder are the two real ones, test/fixtures/fake_provider.js a small one):
  *   id, name, capabilities: { link: 'chrome' | ..., token: boolean, settings: [...] }
  *   engine                         the chat engine (src/engine.js) that answers its models
  *   models()                       sync: the models usable right now (linked and not expired), each { id, name, thinking, escalate, ref }

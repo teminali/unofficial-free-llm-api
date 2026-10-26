@@ -316,7 +316,7 @@
     for (const id of viewIds.slice(1)) views[id] = h('section', { class: 'view', 'data-view': id });
     const main = h('main', { id: 'main', tabindex: '-1' }, views.playground.el, viewIds.slice(1).map((id) => views[id]));
     const foot = h('footer', { class: 'foot' },
-      h('p', { class: 'foot-text', text: 'Unofficial: not made, endorsed or supported by DeepSeek, Google or Qwen. It uses your own sessions and can get an account slowed down, muted or signed out.' }),
+      h('p', { class: 'foot-text', text: 'Unofficial: not made, endorsed or supported by DeepSeek or Qoder. It uses your own sessions and can get an account slowed down, muted or signed out.' }),
       h('p', { class: 'foot-links' },
         h('a', { href: `${REPO}/blob/HEAD/DISCLAIMER.md`, target: '_blank', rel: 'noopener noreferrer', text: 'Read the disclaimer' }),
         h('a', { class: 'support', href: `${REPO}/blob/HEAD/DONATE.md`, target: '_blank', rel: 'noopener noreferrer', title: 'This project is free. If it helped, say so.' }, icon('heart', 14), 'Support the project')));
@@ -543,7 +543,7 @@
     const stream = h('input', { type: 'checkbox', checked: store.get('stream', true), id: 'opt-stream' });
     const effort = h('select', { 'aria-label': 'Reasoning effort' },
       h('option', { value: '', text: 'Default' }), h('option', { value: 'low', text: 'Low' }), h('option', { value: 'medium', text: 'Medium' }), h('option', { value: 'high', text: 'High' }));
-    const effortField = h('label', { class: 'field' }, h('span', { text: 'Reasoning effort' }), effort, h('span', { class: 'hint', text: 'Gemini only: how long it thinks.' }));
+    const effortField = h('label', { class: 'field' }, h('span', { text: 'Reasoning effort' }), effort, h('span', { class: 'hint', text: 'How hard the model thinks, where the provider takes it.' }));
     const messages = h('div', { class: 'messages', role: 'log', 'aria-live': 'polite', 'aria-label': 'Conversation', tabindex: '0' });
     const errSlot = h('div', { role: 'alert' });
     const input = h('textarea', { rows: 1, placeholder: 'Message the model', 'aria-label': 'Message', enterkeyhint: 'send' });
@@ -567,7 +567,7 @@
       const tried = st.requests.length > 0 || firstRequestDone();
       const linkedNames = st.providers.filter((p) => p.linked && !p.expired).map((p) => p.name);
       return [
-        { id: 'link', done: hasModels, title: 'Link an account', text: hasModels ? `Linked: ${linkedNames.join(', ') || 'a provider'}.` : 'Link a DeepSeek, Gemini or Qwen account once in a Chrome window that opens for you, or paste a Bike4Mind API key. Nothing here goes to a server of ours.', action: hasModels ? null : btn('Link an account', { class: 'primary', onclick: () => show('accounts', { focus: true }) }, 'link') },
+        { id: 'link', done: hasModels, title: 'Link an account', text: hasModels ? `Linked: ${linkedNames.join(', ') || 'a provider'}.` : 'Link a DeepSeek account once in a Chrome window that opens for you, or paste a Qoder personal access token. Nothing here goes to a server of ours.', action: hasModels ? null : btn('Link an account', { class: 'primary', onclick: () => show('accounts', { focus: true }) }, 'link') },
         { id: 'key', done: st.keys.length > 0, title: 'Make or copy an API key', text: st.keys.length ? `${plural(st.keys.length, 'key')} made. Show it again any time on the API page.` : 'Your own code needs a key to call this server. Make one, then copy it.', action: st.keys.length ? btn('Go to API keys', { onclick: () => show('api', { focus: true }) }, 'key') : btn('Go to API keys', { class: hasModels ? 'primary' : '', onclick: () => show('api', { focus: true }) }, 'key') },
         { id: 'try', done: tried, title: 'Try it', text: tried ? 'A request has gone through.' : 'Send a message here, or connect a tool such as Lens Code or Cline.',
           action: h('div', { class: 'row' }, btn('Say hello', { class: hasModels && !tried ? 'primary' : '', disabled: !hasModels, onclick: () => { input.value = 'Say hello in five words.'; autosize(); input.focus(); } }, 'chat'), btn('Connect a tool', { onclick: () => show('api', { focus: true }) }, 'code')) }
@@ -898,23 +898,25 @@
 
   const HOW = {
     deepseek: 'Opens a Chrome window so you can sign in to chat.deepseek.com yourself. The session is kept on this computer and used for each request. Answers come from the same models the website uses.',
-    gemini: 'Opens Chrome on a private profile so you can sign in to gemini.google.com yourself. Chat then runs in that Chrome, in the background. Your requests show up in your Gemini activity like any chat you typed.',
-    qwen: 'Opens Chrome with a dedicated profile so you can sign in to chat.qwen.ai yourself. Chat requests use Qwen\'s normal message box in that browser, which stays open while the bridge runs. Complete any verification checks yourself. This is unofficial, not Qwen\'s official API.',
-    bike4mind: 'Uses your own Bike4Mind API key. Make a key in your Bike4Mind account under Profile, then API Keys, and paste it here. Requests go to Bike4Mind\'s official API and use that account\'s credits. No browser window is involved.'
+    qoder: 'Uses a personal access token from your own Qoder account, through the official Qoder CLI on this computer. Install the CLI with "npm install -g @qoder-ai/qodercli", make a token at qoder.com/account/integrations, then paste it here. Each request is one CLI run in its own config folder, using your Qoder plan. No browser window is involved.'
   };
 
   /** The key is the login, and it is spent: its consent says both, in the same dialog shape as the Chrome providers use. */
   function consentKey(provider) {
+    const token = provider.id === 'qoder' ? 'personal access token' : 'API key';
+    const reaches = provider.id === 'qoder'
+      ? 'This program keeps it on this computer and hands it only to the official Qoder CLI, which makes the requests to Qoder.'
+      : `This program keeps it on this computer and sends it only to ${provider.name}'s API.`;
     return modal(`Link ${provider.name}`, (finish) => {
       const ok = h('input', { type: 'checkbox', id: 'consent-key-ok' });
-      const go = btn('Use this API key', { class: 'primary', disabled: true, onclick: () => finish(true) });
+      const go = btn(`Use this ${token}`, { class: 'primary', disabled: true, onclick: () => finish(true) });
       ok.addEventListener('change', () => { go.disabled = !ok.checked; });
       return [
         h('h2', { class: 'dlg-title', text: `Link ${provider.name}` }),
         h('ul', { class: 'plain-list' },
-          h('li', { text: `The key is made in your own ${provider.name} account. This program keeps it on this computer and sends it only to app.bike4mind.com.` }),
-          h('li', { text: 'Every request is billed in credits in that account. Requests are paced and capped here, but each one still spends credits; watch the balance in your account.' }),
-          h('li', { text: 'You can revoke the key in your account at any time. This program cannot undo the credits an answer used.' }),
+          h('li', { text: `The ${token} is made in your own ${provider.name} account. ${reaches}` }),
+          h('li', { text: 'Every request uses the credits or plan allowance in that account. Requests are paced and capped here, but each one still counts; watch the balance in your account.' }),
+          h('li', { text: `You can revoke the ${token} in your account at any time. This program cannot undo what an answer used.` }),
           h('li', { text: 'Use a key you can afford to spend, and keep it out of anything you share.' })),
         h('label', { class: 'check', for: 'consent-key-ok' }, ok, h('span', { class: 'box' }), h('span', { text: 'I understand and accept this.' })),
         h('div', { class: 'dlg-actions' }, btn('Cancel', { onclick: () => finish(false) }), go)];
@@ -966,27 +968,28 @@
 
   /** The key flow: one field, and the key replaces the login. A linked account keeps the field folded away. */
   function keyLinker(p, u) {
+    const token = p.id === 'qoder' ? 'personal access token' : 'API key';
     const field = h('input', {
       type: 'password', autocomplete: 'off', id: `key-${p.id}`,
-      placeholder: p.linked ? 'Paste a new key to replace it' : 'Paste your b4m_ API key',
-      'aria-label': `${p.name} API key`
+      placeholder: p.linked ? `Paste a new ${token} to replace it` : (p.keyPlaceholder || `Paste your ${p.name} ${token}`),
+      'aria-label': `${p.name} ${token}`
     });
     const submit = async () => {
       if (!(await consentKey(p))) return;
       const key = field.value.trim();
-      if (!key) { u.error = 'Paste an API key first.'; paint(true); return; }
+      if (!key) { u.error = `Paste your ${token} first.`; paint(true); return; }
       act(p.id, async () => {
         const r = await admin('POST', `/providers/${p.id}/token`, { token: key, consentAcknowledged: true });
         if (r.error) throw new Error(r.error);
         field.value = '';
-        u.note = `${p.name} is linked. Its models and credits are shown below.`;
+        u.note = `${p.name} is linked. Its models are shown below.`;
       });
     };
     const form = h('div', { class: 'stack' },
-      h('p', { class: 'small muted', text: 'Make a key in your Bike4Mind account under Profile, then API Keys (it starts with b4m_). It is kept on this computer and only sent to app.bike4mind.com; every request uses the credits in that account.' }),
-      h('div', { class: 'row nowrap' }, field, btn(p.linked && !p.expired ? 'Replace key' : 'Link account', { class: 'primary', disabled: u.busy, onclick: submit }, 'key')));
+      h('p', { class: 'small muted', text: p.keyHint || `The key is made in your ${p.name} account. It is kept on this computer and only sent to ${p.name}'s API; every request uses that account.` }),
+      h('div', { class: 'row nowrap' }, field, btn(p.linked && !p.expired ? (p.id === 'qoder' ? 'Replace token' : 'Replace key') : 'Link account', { class: 'primary', disabled: u.busy, onclick: submit }, 'key')));
     if (!p.linked || p.expired) return h('div', { class: 'stack-sm' }, form);
-    return h('details', { class: 'fold' }, h('summary', { text: 'Replace the API key' }), form);
+    return h('details', { class: 'fold' }, h('summary', { text: `Replace the ${token}` }), form);
   }
 
   function sessionLine(s) {
@@ -1000,7 +1003,7 @@
     const caps = p.capabilities || {};
     const demo = Boolean(caps.demo);
     const withKey = caps.link === 'key';
-    const status = p.linking ? ['Waiting for you', 'warn'] : !p.linked ? ['Not linked', ''] : p.expired ? [withKey ? 'Key refused' : 'Sign-in expired', 'bad'] : [demo ? 'Always on' : 'Linked', 'good'];
+    const status = p.linking ? ['Waiting for you', 'warn'] : !p.linked ? ['Not linked', ''] : p.expired ? [withKey ? (p.id === 'qoder' ? 'Token refused' : 'Key refused') : 'Sign-in expired', 'bad'] : [demo ? 'Always on' : 'Linked', 'good'];
     const needsLink = !demo && (!p.linked || p.expired || p.linking);
     const actions = [];
     if (!demo && !needsLink) {
@@ -1012,7 +1015,7 @@
       }, 'link'));
       actions.push(btn('Unlink', {
         class: 'danger', disabled: u.busy, onclick: async () => {
-          const yes = await confirmDialog({ title: `Unlink ${p.name}?`, body: withKey ? 'The saved API key is deleted from this computer, and requests for this account stop working until you link it again. The key itself still exists in your Bike4Mind account.' : 'The saved session is deleted from this computer, and requests for this account stop working until you link it again. You can link it again any time.', yes: 'Unlink', danger: true });
+          const yes = await confirmDialog({ title: `Unlink ${p.name}?`, body: withKey ? `The saved key or token is deleted from this computer, and requests for this account stop working until you link it again. The credential itself still exists in your ${p.name} account.` : 'The saved session is deleted from this computer, and requests for this account stop working until you link it again. You can link it again any time.', yes: 'Unlink', danger: true });
           if (yes) act(p.id, () => admin('POST', `/providers/${p.id}/unlink`, {}));
         }
       }, 'trash'));
@@ -1035,9 +1038,7 @@
         h('label', { class: 'switch' }, sw, h('span', { class: 'track' }), h('span', { class: 'switch-text' }, h('strong', { text: 'One chat per conversation' }), h('span', { class: `status-line ${s.enabled ? 'on' : 'off'}`, text: sessionLine(s) }))),
         h('span', { class: 'hint', id: `sessions-hint-${p.id}`, text: stopped
           ? 'It switched itself off so that nothing is spent on a setting that does not work. Switch it on to try again.'
-          : p.id === 'qwen'
-            ? 'Keeps one Qwen chat for each API conversation. Turning this off removes bridge-created chats; your other chats are not touched.'
-            : 'A conversation stays in one chat on the provider\'s side instead of a new chat per message. New, and so far only run against stand-ins, not a real account. It switches itself off if continuing a chat fails twice in a row.' })));
+          : 'A conversation stays in one chat on the provider\'s side instead of a new chat per message. It switches itself off if continuing a chat fails twice in a row.' })));
     }
     let tokenBox = null;
     if (caps.token && !demo && !withKey) {
@@ -1048,30 +1049,28 @@
           token,
           btn('Use this token', { class: 'sm', onclick: () => act(p.id, async () => { const r = await admin('POST', `/providers/${p.id}/token`, { token: token.value, consentAcknowledged: true }); if (r.error) throw new Error(r.error); }) })));
     }
-    // Gemini predates the refreshModels capability; keep its picker flow alongside account model-list refreshes.
     let readAgain = null;
-    if (p.id === 'gemini' || caps.refreshModels) {
-      const gemini = p.id === 'gemini';
+    if (caps.refreshModels) {
       const off = Boolean(p.linking) || !p.linked || Boolean(p.expired);
       const reread = () => {
         u.reading = true;
         u.read = null;
-        announce(gemini ? 'Reading the model picker' : `Reading ${p.name} models`);
+        announce(`Reading ${p.name} models`);
         return act(p.id, async () => {
           try {
             const r = await admin('POST', `/providers/${p.id}/refresh-models`, {});
             u.read = r.refreshed
-              ? { ok: true, text: gemini ? `Models read again: ${plural((r.models || []).length, 'row')}` : `${p.name} account models read again: ${plural((r.models || []).length, 'model')}` }
-              : { ok: false, text: gemini ? 'Could not read the picker; the list stays as it was' : `Could not read your ${p.name} account's model list; the list stays as it was` };
+              ? { ok: true, text: `${p.name} account models read again: ${plural((r.models || []).length, 'model')}` }
+              : { ok: false, text: `Could not read your ${p.name} account's model list; the list stays as it was` };
             announce(u.read.text);
           } finally { u.reading = false; }
         });
       };
       readAgain = h('div', { class: 'stack-sm' },
-        h('div', { class: 'row' }, btn(u.reading ? (gemini ? 'Reading the picker' : `Reading ${p.name} models`) : 'Read models again', { id: `reread-${p.id}`, class: 'sm', disabled: u.busy || off, 'aria-busy': u.reading ? 'true' : undefined, onclick: reread }, 'retry')),
-        u.reading ? h('p', { class: 'small muted', role: 'status', text: gemini ? 'Opening Gemini\'s page to read the picker. This can take up to 20 seconds.' : `Reading the model list available to your ${p.name} account.` })
+        h('div', { class: 'row' }, btn(u.reading ? `Reading ${p.name} models` : 'Read models again', { id: `reread-${p.id}`, class: 'sm', disabled: u.busy || off, 'aria-busy': u.reading ? 'true' : undefined, onclick: reread }, 'retry')),
+        u.reading ? h('p', { class: 'small muted', role: 'status', text: `Reading the model list available to your ${p.name} account.` })
           : u.read ? h('div', { class: u.read.ok ? 'small muted' : 'notice warn', role: 'status', text: u.read.text })
-            : h('span', { class: 'hint', text: off ? 'Works once the account is linked and its sign-in is finished.' : gemini ? 'Reads the models from your Gemini account\'s own picker. It does this by itself when the list is 15 minutes old.' : withKey ? `Reads the model list and credit balance available to your ${p.name} API key.` : `Reads the model list available to your ${p.name} account using the saved sign-in.` }));
+            : h('span', { class: 'hint', text: off ? 'Works once the account is linked and its sign-in is finished.' : withKey ? `Reads the model list${p.credits ? ' and credit balance' : ''} available to your ${p.name} ${p.id === 'qoder' ? 'token' : 'API key'}.` : `Reads the model list available to your ${p.name} account using the saved sign-in.` }));
     }
     return h('article', { class: 'card provider stack' },
       h('div', { class: 'row between' }, h('h2', { class: 'h3', text: p.name }), chip(status[0], status[1])),
@@ -1081,7 +1080,7 @@
       u.note ? h('div', { class: 'notice warn', text: u.note }) : null,
       u.error ? h('div', { class: 'notice bad', role: 'alert', text: u.error }) : null,
       p.linked && !p.expired ? h('div', { class: 'models' }, (p.models || []).map((m) => chip(m.name || m.id, 'accent', withKey
-        ? [m.id, m.supportsTools ? 'tools' : 'no tools', m.supportsVision ? 'pictures' : '', m.supportsThinking ? 'thinking' : ''].filter(Boolean).join(' · ')
+        ? [m.id, m.supportsTools === true ? 'tools' : m.supportsTools === false ? 'no tools' : '', m.supportsVision ? 'pictures' : '', m.supportsThinking ? 'thinking' : ''].filter(Boolean).join(' · ')
         : m.id))) : null,
       readAgain,
       p.linked ? h('dl', { class: 'kv' },
@@ -1153,16 +1152,13 @@
     : h('span', { class: 'muted', text: 'unknown' }));
 
   const PASTE_KEY = 'paste your key here';
-  const STABLE_FIRST = ['gemini', 'gemini-auto'];
 
   /**
    * The values a plain client's form asks for, one line each. The whole block is copied, so the key is only ever the placeholder: never the real key and never its
-   * hidden form. The stable Gemini names come first when they are there; when the models carry different sizes the smallest is the one to plan around.
+   * hidden form. When the models carry different sizes the smallest is the one to plan around.
    */
   function pasteText(base, models) {
-    const ids = models.map((m) => m.id);
-    const first = STABLE_FIRST.filter((id) => ids.includes(id));
-    const list = [...first, ...ids.filter((id) => !first.includes(id))];
+    const list = models.map((m) => m.id);
     const sizes = models.filter(hasSize).map((m) => m.context_length);
     const lines = [`Name: ${TITLE}`, `Address: ${base}/v1`, `Key: ${PASTE_KEY}`, `Models: ${list.length ? list.join(', ') : 'none yet, link an account first'}`];
     if (sizes.length) lines.push(`Context: ${Math.min(...sizes)} (a working size, not the model's maximum)`);

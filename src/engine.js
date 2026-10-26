@@ -110,7 +110,8 @@ function createChatEngine({ provider, governor = null, log = () => {}, onNotice 
     const basePrompt0 = promptFor();
     let basePrompt = basePrompt0;
     let prompt = basePrompt0;
-    const level = ['low', 'medium', 'high'].includes(String(body.reasoning_effort || '').toLowerCase()) ? String(body.reasoning_effort).toLowerCase() : (String(body.reasoning_effort || '').toLowerCase() === 'minimal' ? 'low' : undefined);
+    const effort = String(body.reasoning_effort || '').toLowerCase().trim();
+    const level = effort === 'minimal' ? 'low' : (['none', 'low', 'medium', 'high', 'xhigh', 'max'].includes(effort) ? effort : undefined);
 
     // Sessions: what this request says about its conversation, and the kind of chat it needs (a chat that was opened for other tools or another model is no use).
     const fp = store ? B.conversationFingerprints(messages) : null;

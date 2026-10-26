@@ -10,13 +10,9 @@ coverage/
 /data/
 config.json
 deepseek_session.json
-gemini_session.json
-gemini_settings.json
-qwen_session.json
-qwen_settings.json
 sessions-*.json
 chats-*.json
 usage-*.json
 deepseek-chrome/
-gemini-chrome/
-qwen-chrome/
+qoder_key.json
+qoder-cli/

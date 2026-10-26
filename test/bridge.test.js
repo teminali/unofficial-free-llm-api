@@ -97,6 +97,12 @@ test('parseAnswer: extracts single and multiple tool_call blocks', () => {
   assert.equal(parsedMultiple.calls[1].name, 'read');
   assert.deepEqual(JSON.parse(parsedMultiple.calls[1].arguments), { filePath: 'styles.css' });
   assert.equal(parsedMultiple.content, 'Some notes.');
+
+  const flattened = '<tool_call>{"name":"write","filePath":"index.html","content":"hello"}</tool_call>';
+  const parsedFlattened = parseAnswer(flattened, TOOLS);
+  assert.equal(parsedFlattened.calls.length, 1);
+  assert.equal(parsedFlattened.calls[0].name, 'write');
+  assert.deepEqual(JSON.parse(parsedFlattened.calls[0].arguments), { filePath: 'index.html', content: 'hello' });
 });
 
 test('parseAnswer: accepts native DSML tool call blocks', () => {
@@ -212,7 +218,7 @@ test('buildPrompt: the rules follow the tools that were offered', () => {
   assert.ok(/raw code/i.test(files), 'an agent with file tools is told to deliver code through them');
 });
 
-test('buildPrompt: the fenced bridge (Gemini) follows the offered tools too', () => {
+test('buildPrompt: the fenced bridge follows the offered tools too', () => {
   const weather = fencedBridgeSection(WEATHER, { fileChars: 2500 });
   assert.ok(weather.includes('```json') && weather.includes('### get_weather'));
   assert.ok(!/Keep every file/.test(weather) && !/raw code/i.test(weather));

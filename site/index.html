@@ -5,17 +5,17 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; style-src 'self'; script-src 'self'; base-uri 'none'; form-action 'none'">
 <title>Unofficial Free LLM API: a local API for your own chat account</title>
-<meta name="description" content="A local, OpenAI-compatible API and web playground for the personal DeepSeek, Gemini or Qwen chat account you already have, or a Bike4Mind API key. Unofficial, alpha, open source.">
+<meta name="description" content="A local, OpenAI-compatible API and web playground for the personal DeepSeek chat account you already have, or a Qoder personal access token from your own account. Unofficial, alpha, open source.">
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#0d1015" media="(prefers-color-scheme: dark)">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Unofficial Free LLM API">
 <meta property="og:title" content="Unofficial Free LLM API: a local API for your own chat account">
-<meta property="og:description" content="A local, OpenAI-compatible API and web playground for the personal DeepSeek, Gemini or Qwen chat account you already have, or a Bike4Mind API key. Unofficial, alpha, open source.">
+<meta property="og:description" content="A local, OpenAI-compatible API and web playground for the personal DeepSeek chat account you already have, or a Qoder personal access token from your own account. Unofficial, alpha, open source.">
 <meta name="twitter:card" content="summary">
 <meta name="twitter:title" content="Unofficial Free LLM API: a local API for your own chat account">
-<meta name="twitter:description" content="A local, OpenAI-compatible API and web playground for the personal DeepSeek, Gemini or Qwen chat account you already have, or a Bike4Mind API key. Unofficial, alpha, open source.">
+<meta name="twitter:description" content="A local, OpenAI-compatible API and web playground for the personal DeepSeek chat account you already have, or a Qoder personal access token from your own account. Unofficial, alpha, open source.">
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="styles.css">
 <script src="app.js"></script>
@@ -42,11 +42,11 @@
   <section class="hero wrap" aria-labelledby="top-title">
     <p class="eyebrow">Alpha &middot; open source &middot; MIT</p>
     <h1 id="top-title">Unofficial Free LLM API</h1>
-    <p class="lead">A local, OpenAI-compatible API and web playground for the personal DeepSeek, Gemini or Qwen chat account you already have, or a Bike4Mind API key from your own account.</p>
+    <p class="lead">A local, OpenAI-compatible API and web playground for the personal DeepSeek chat account you already have, or a Qoder personal access token from your own account.</p>
 
     <aside id="notice" class="notice" role="note" aria-label="Read this first">
       <p class="notice-title"><strong>Unofficial, and it carries real risk.</strong></p>
-      <p>This is not made or endorsed by DeepSeek, Google, Alibaba or Bike4Mind. The website lanes may break those providers&rsquo; terms, and an account used that way can be slowed down, muted or signed out. Bike4Mind is used through its official API, and every request spends that account&rsquo;s credits. The program paces and caps itself to lower the risk, not to remove it. It can also stop working at any time, because the providers change their sites without notice.</p>
+      <p>This is not made or endorsed by DeepSeek or Qoder. The DeepSeek website lane may break DeepSeek&rsquo;s terms, and an account used that way can be slowed down, muted or signed out. Qoder is used through its official CLI, and every request counts against that account&rsquo;s plan. The program paces and caps itself to lower the risk, not to remove it. It can also stop working at any time, because providers change their sites without notice.</p>
       <p>Use an account you can afford to lose. Read the <a href="https://github.com/teminali/unofficial-free-llm-api/blob/HEAD/DISCLAIMER.md">DISCLAIMER</a> before you link anything.</p>
     </aside>
 
@@ -59,7 +59,7 @@
           <span class="copy-label" data-label="Copy">Copy</span>
         </button>
       </div>
-      <p class="small">You need Node.js 22 or newer. Google Chrome is needed to link DeepSeek, Gemini or Qwen (Qwen also answers through it, so its window stays open while the program runs). Bike4Mind needs no Chrome: it links with a pasted API key. <code>@latest</code> stops your computer from running an older copy it kept.</p>
+      <p class="small">You need Node.js 22 or newer. Google Chrome is needed to link DeepSeek. Qoder needs no Chrome: it links with a pasted personal access token, and it needs its official CLI: <code>npm install -g @qoder-ai/qodercli</code>. <code>@latest</code> stops your computer from running an older copy it kept.</p>
       <p class="actions">
         <a class="btn btn-primary" href="https://github.com/teminali/unofficial-free-llm-api">View on GitHub</a>
         <a class="btn" href="https://www.npmjs.com/package/unofficial-free-llm-api">npm package</a>
@@ -77,7 +77,7 @@
         </li>
         <li>
           <h3>Sign in yourself</h3>
-          <p>In the web interface, choose Accounts, then Link account. Tick the box, sign in to the provider in the Chrome window that opens, then press &ldquo;I have signed in&rdquo;. The program never sees your password. For Bike4Mind, paste a <code>b4m_</code> API key from your account instead; no window opens.</p>
+          <p>In the web interface, choose Accounts, then Link account. Tick the box, sign in to DeepSeek in the Chrome window that opens, then press &ldquo;I have signed in&rdquo;. The program never sees your password. For Qoder, install its CLI with <code>npm install -g @qoder-ai/qodercli</code> and paste a personal access token from <code>qoder.com/account/integrations</code>. That opens no window.</p>
         </li>
         <li>
           <h3>Point your tool at it</h3>
@@ -102,7 +102,7 @@
         </li>
         <li>
           <h3>A models list</h3>
-          <p><code>GET /v1/models</code> lists the models of the accounts that are linked right now, each with a working <code>context_length</code>. Gemini&rsquo;s, Qwen&rsquo;s and Bike4Mind&rsquo;s lists follow your account: <code>gemini</code> and <code>gemini-auto</code> are always there, and Qwen and Bike4Mind list the ids your account offers.</p>
+          <p><code>GET /v1/models</code> lists the models of the accounts that are linked right now, each with a working <code>context_length</code>. Qoder&rsquo;s list follows your account: it lists the ids your account can call, prefixed <code>qoder-</code>, read through its official CLI.</p>
         </li>
         <li>
           <h3>One chat per conversation</h3>
@@ -127,11 +127,11 @@
       <div class="status">
         <h3>Status: Alpha. What has been run, honestly</h3>
         <ul>
-          <li>The program has automated tests that run against stand-ins: a scripted provider, a local copy of DeepSeek&rsquo;s endpoints, a local page shaped like Gemini&rsquo;s and a local copy of Bike4Mind&rsquo;s API. Qwen has no stand-in yet, so its lane has been checked live only.</li>
-          <li>Run by the author on their own real accounts: on 2026-10-22, linking DeepSeek and Gemini, chatting, a three-message DeepSeek conversation that stayed in one DeepSeek chat, a Gemini conversation that stayed in one Gemini chat, switching models, and the model list read from a real Gemini picker. DeepSeek answered in 3 to 8 seconds. Gemini worked but was slow and uneven, and sometimes answered with its own error message. On 2026-10-23, linking Qwen and using Qwen3.7-Plus: a new chat (about 24 seconds for the first answer), a follow-up that stayed in the same chat (about 5 seconds), a cancelled request (no retry, the draft was put back), and a recovery that opened a replacement chat. Qwen3.8-Max answered with its own daily-limit message, which the program returned as text and did not retry.</li>
-          <li>Not yet run against a real account: Bike4Mind (no key has been spent on the live API; its lane runs against a local copy of it), an agent sending tools (including on Qwen), long conversations, a day of steady use, <code>selftest --yes</code>, the Anthropic and Responses APIs with their own clients. One chat per conversation is built to fail safe: if a provider does not accept it, the chat is given up, and two failures in a row switch the feature off.</li>
-          <li>Qwen can ask for a browser check. When it does, the request fails with <code>403 qwen_verification_required</code>, requests pause for 20 minutes, and you complete the check in Qwen&rsquo;s own window. The program does not pass it for you or retry around it.</li>
-          <li>Not supported: a picture given as an address, embeddings, and more than one answer per request. Pictures sent inline go to DeepSeek and to Bike4Mind models that see; on Gemini, Qwen and the other APIs they become a note. Settings a provider has no control for are ignored and named in an <code>X-ULA-Ignored</code> response header; <code>temperature</code> is used by Bike4Mind and ignored by the rest. Token counts are estimates.</li>
+          <li>The program has automated tests that run against stand-ins: a scripted provider, a local copy of DeepSeek&rsquo;s endpoints, and a script that behaves like the Qoder CLI (its model list, its JSON and stream-json output, and each way it refuses).</li>
+          <li>Run by the author on their own real accounts: on 2026-10-22, linking DeepSeek, chatting, a three-message DeepSeek conversation that stayed in one DeepSeek chat, and switching models, which starts another chat. DeepSeek answered in 3 to 8 seconds. On 2026-10-26, linking Qoder with a real personal access token and the official CLI: its model list was read, and chat completions came back through the local API.</li>
+          <li>Not yet run against a real account: an agent sending tools, long conversations, a day of steady use, <code>selftest --yes</code>, and the Anthropic and Responses APIs with their own clients. One chat per conversation is built to fail safe: if a provider does not accept it, the chat is given up, and two failures in a row switch the feature off.</li>
+          <li>A client&rsquo;s own connection test can time out on Qoder while a normal chat works: the first CLI call pays for the CLI starting up, so raise that client&rsquo;s timeout.</li>
+          <li>Not supported: a picture given as an address, embeddings, and more than one answer per request. Pictures sent inline go to DeepSeek; on Qoder and the other APIs they become a note. Settings a provider has no control for are ignored and named in an <code>X-ULA-Ignored</code> response header; <code>temperature</code> is ignored by both providers. Token counts are estimates.</li>
           <li>If you try it on a real account, an issue saying what you saw is the most useful contribution there is.</li>
         </ul>
       </div>
@@ -148,7 +148,7 @@
         </li>
         <li>
           <h3>You sign in yourself</h3>
-          <p>Linking never sees your password. You sign in to the provider in a Chrome window, and the program keeps the session that results. Bike4Mind uses an API key from your own account instead; it stays on this computer and is sent only to app.bike4mind.com.</p>
+          <p>Linking never sees your password. You sign in to DeepSeek in a Chrome window, and the program keeps the session that results. Qoder uses a personal access token from your own account instead: it stays on this computer and is handed only to the official Qoder CLI, in its environment.</p>
         </li>
         <li>
           <h3>Your logins stay in a folder on your machine</h3>
@@ -164,7 +164,7 @@
         </li>
         <li>
           <h3>It paces and caps itself</h3>
-          <p>DeepSeek: one request at a time, at least 4 seconds apart, at most 10 a minute. Gemini: 1 second apart, 20 a minute. Qwen: at least 10 seconds apart, 6 a minute. Bike4Mind: 1 second apart, 20 a minute, and its own rate limit is obeyed. A daily cap of 300 calls per account by default (Qwen: 100); it caps calls, not spending, so Bike4Mind bills every request from your balance. The first refusal from a provider, such as a rate limit, a mute or a human check, stops all calls until a cooldown ends; Qwen&rsquo;s browser check pauses requests for 20 minutes, and the check is yours to complete. This lowers the risk. It does not remove it.</p>
+          <p>DeepSeek: one request at a time, at least 4 seconds apart, at most 10 a minute. Qoder: 1 second apart, 20 a minute, and its own rate limit is obeyed. A daily cap of 300 calls per account by default; it caps calls, not spending, and Qoder counts each request against your plan. The first refusal from a provider, such as a rate limit or a mute, stops all calls until a cooldown ends. This lowers the risk. It does not remove it.</p>
         </li>
         <li>
           <h3>This site has no tracking</h3>
@@ -244,7 +244,7 @@ print(reply.choices[0].message.content)</code></pre>
       <details>
         <summary>Is my account safe?</summary>
         <div class="answer">
-          <p>There is no guarantee. Providers can slow an account down, ask for human checks, sign it out or mute it. A DeepSeek account has been muted for days after bursts of messages sent this way. Qwen can ask for a browser check, which the program leaves for you to complete. Bike4Mind is the official API, so its risk is different: every request bills the credits in that account, and the key can be revoked there at any time. The program paces and caps itself and stops at the first refusal, which lowers the risk and cannot remove it.</p>
+          <p>There is no guarantee. Providers can slow an account down, ask for human checks, sign it out or mute it. A DeepSeek account has been muted for days after bursts of messages sent this way. Qoder is the official CLI, so its risk is different: every request counts against that account&rsquo;s plan, and the token can be revoked there at any time. The program paces and caps itself and stops at the first refusal, which lowers the risk and cannot remove it.</p>
           <p>Use an account you can afford to lose, and not one you earn from or depend on. Read the <a href="https://github.com/teminali/unofficial-free-llm-api/blob/HEAD/DISCLAIMER.md">DISCLAIMER</a> first.</p>
         </div>
       </details>
@@ -253,7 +253,7 @@ print(reply.choices[0].message.content)</code></pre>
         <summary>Why does it open Chrome?</summary>
         <div class="answer">
           <p>To link an account. It opens an ordinary Chrome window on a private profile folder inside the program&rsquo;s data folder, never your everyday profile, and you sign in there yourself. That is how the program never sees your password.</p>
-          <p>After that, DeepSeek is answered without a window. Gemini is answered through Chrome running in the background, which uses hundreds of MB while it works and closes after ten idle minutes. Qwen is answered through its own Chrome window, which stays open while the program runs because requests go through the page. Bike4Mind needs no Chrome at all: it uses its official API with the key you paste.</p>
+          <p>After that, DeepSeek is answered without a window. Qoder needs no Chrome at all: it uses its official CLI, with the personal access token you paste.</p>
         </div>
       </details>
 
@@ -292,7 +292,7 @@ print(reply.choices[0].message.content)</code></pre>
       <li><a href="https://github.com/teminali/unofficial-free-llm-api/blob/HEAD/SECURITY.md">Security</a></li>
       <li><a href="https://github.com/teminali/unofficial-free-llm-api/blob/HEAD/DONATE.md">Donate</a></li>
     </ul>
-    <p>Unofficial Free LLM API is open source under the MIT licence. Not affiliated with DeepSeek, Google, Alibaba or Bike4Mind.</p>
+    <p>Unofficial Free LLM API is open source under the MIT licence. Not affiliated with DeepSeek or Qoder.</p>
     <p>This site loads nothing from other sites and has no tracking.</p>
   </div>
 </footer>

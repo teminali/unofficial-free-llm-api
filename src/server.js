@@ -187,7 +187,7 @@ function createServer({ config, registry, version = '0.0.0', host = '127.0.0.1',
   }
 
   const MODEL_ID = /^\/v1\/models\/(.+)$/;
-  const modelObject = (m) => ({ id: m.id, object: 'model', created: m.created || 0, owned_by: m.provider, name: m.name, ...(m.thinking ? { reasoning: true } : {}), ...(m.context_length ? { context_length: m.context_length } : {}) });
+  const modelObject = (m) => ({ id: m.id, object: 'model', created: m.created || 0, owned_by: m.provider, name: m.name, ...(m.thinking || m.reasoning ? { reasoning: true } : {}), ...(m.context_length ? { context_length: m.context_length } : {}) });
 
   async function handleApi(req, res, url, who) {
     const extra = who.kind === 'key' ? corsHeaders(req) : {};

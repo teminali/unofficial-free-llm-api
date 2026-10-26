@@ -99,7 +99,7 @@ test('doctor reads the computer in words: what is fine, what is not, and what to
       assert.equal(code, 1, 'a folder that anyone can read is a fault');
     }
     assert.match(text, /DeepSeek: not linked/);
-    assert.match(text, /Gemini: not linked/);
+    assert.match(text, /Qoder: not linked/);
     assert.match(text, /one chat per conversation on/);
     assert.match(text, /Chrome (found|not found)/);
     assert.match(text, /Version \d+\.\d+\.\d+ \(add --online/);
@@ -135,7 +135,7 @@ test('doctor says one chat per conversation is off when the person switched it o
     const out = io();
     await run(['doctor', '--data-dir', dir, '--port', '8499'], out);
     assert.match(out.text(), /DeepSeek: not linked; one chat per conversation off/);
-    assert.match(out.text(), /Gemini: not linked; one chat per conversation on/);
+    assert.match(out.text(), /Qoder: not linked/);
   } finally { await cleanupDir(dir); }
 });
 
@@ -219,14 +219,14 @@ test('selftest: no server, no linked model and the demo provider are each said i
 test('log prints the last lines the providers logged, with keys and tokens scrubbed, and only to the admin', async () => {
   const dir = tmp();
   const logBuffer = createLogBuffer(5);
-  for (let i = 1; i <= 7; i += 1) logBuffer.push(`gemini: line ${i}`);
+  for (let i = 1; i <= 7; i += 1) logBuffer.push(`qoder: line ${i}`);
   logBuffer.push('deepseek: sent with sk-ula-abcdef0123456789 and token=AAAAAAAAAAAAAAAAAAAAAAAA');
   const a = await running(dir, { logBuffer });
   try {
     const out = io();
     assert.equal(await run(['log', '--port', String(a.port), '--data-dir', dir], out), 0, out.errText());
-    assert.match(out.text(), /gemini: line 7/);
-    assert.ok(!/gemini: line 1\b/.test(out.text()), 'only the last five are kept');
+    assert.match(out.text(), /qoder: line 7/);
+    assert.ok(!/qoder: line 1\b/.test(out.text()), 'only the last five are kept');
     assert.ok(!/sk-ula-abcdef/.test(out.text()) && !/AAAAAAAAAAAA/.test(out.text()), 'keys and tokens are scrubbed: ' + out.text());
     const some = io();
     await run(['log', '--lines', '2', '--port', String(a.port), '--data-dir', dir], some);

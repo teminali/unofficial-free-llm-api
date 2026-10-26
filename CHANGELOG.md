@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.6.0 (2026-10-26)
+
+### Added
+
+- **Qoder, through its official CLI.** A second provider beside DeepSeek, linked with a personal access token made at `qoder.com/account/integrations`; nothing opens a
+  browser, so it works on a machine with no desktop. Qoder's model server cannot be called with a personal token from outside its own client (the catalog and
+  the model calls are signed by the CLI's handshake), so every request drives the installed official CLI (`npm install -g @qoder-ai/qodercli`) as one
+  `qoder --print` process. The token is kept on this computer, in `qoder_key.json` (0600), and handed only to that process, in its environment; it is never
+  on a command line and never logged. A token the CLI refuses is marked refused until it is replaced.
+- **Models from the account, with stable ids.** Every model the CLI lists becomes an offered id prefixed `qoder-` (`qoder-qwen3-7-max`), so a Qwen or Kimi
+  model Qoder offers cannot be mistaken for another provider's; the request sends the key the CLI printed. The list is read when you link, reused for ten
+  minutes, and can be forced with *Read models again* or `POST /_/providers/qoder/refresh-models`. A list in a shape the bridge does not read is an error,
+  never a guessed list.
+- **Thinking and effort through the CLI's own flags.** `low`/`medium`/`high`/`xhigh`/`max` become `--reasoning-effort`, `none` becomes `--thinking disabled`,
+  and a model whose thinking cannot be switched off is asked with `--thinking enabled` when no effort was given. The stream-json output with partial messages
+  is read when the CLI knows it, so text and thinking stream as they arrive; a CLI that refuses those flags is asked again for the plain JSON envelope.
+- **An honest tool bridge.** The CLI has no native tool handoff, so tools go in the prompt as the text protocol the account-backed providers use and the calls
+  are read back into `tool_calls`. The CLI run is text only: a picture is replaced by a note, and `temperature` has no flag, so it is named in `X-ULA-Ignored`.
+- **An isolated, scrubbed child.** The CLI runs in its own `qoder-cli/` folder (0700) inside the data folder, so a Qoder login that already exists on the computer
+  is neither read nor changed; `QODER_*`, `QODERCN_*`, `CLAUDE_CODE_*` and `GEMINI_*` variables are removed from its environment first, so a Qoder Desktop
+  session cannot break it. The token is scrubbed from anything the CLI says before it is logged.
+- `reasoning_effort` now accepts and passes through `none`, `xhigh` and `max` where a provider understands them; Anthropic's `thinking: {"type": "disabled"}`
+  becomes `reasoning_effort: "none"`. `/v1/models` advertises `reasoning: true` for reasoning models, including those whose thinking can be switched off, and the Accounts page takes the
+  key field's hint and example from the provider instead of naming one provider's key format.
+
+### Removed
+
+- **Qwen, Gemini and Bike4Mind are gone.** The owner retired them as unstable: the two site lanes broke whenever Alibaba or Google changed their pages,
+  and all three took upkeep that the DeepSeek and Qoder lanes do not. Their modules, tests, stand-ins, settings, default load order and documentation are removed,
+  and `--providers` now loads DeepSeek and Qoder by default. A `config.json` that names a removed provider still starts: the unknown name is ignored. The
+  DeepSeek lane is unchanged. This is a breaking change for anyone who used one of the three.
+
+### Not covered
+
+- The Qoder lane has been run live with a real token on 2026-10-26: its model list was read and chat completions came back with thinking on and off. The lane is
+  also tested against `test/fixtures/fake_qoder_cli.js`, a script shaped from how the installed CLI answers: its model list, its JSON envelope and its
+  stream-json events, and each way it refuses. If the live CLI starts answering differently, the stand-in needs the difference.
+- Qoder has no chat on its side: every call is a new CLI process, the conversation travels as one prompt, and tools are read from text.
+
 ## 0.5.0 (2026-10-25)
 
 ### Added
