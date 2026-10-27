@@ -3,7 +3,7 @@
  *
  * The CLI is the only client Qoder lets use the token for model calls. A conversation keeps one CLI process (warm.js), so a follow-up costs about three
  * seconds instead of fifteen; with sessions off, every request is one `qoder --print` process (cli.js). Tools are a text protocol in the prompt (bridge.js);
- * the CLI has no native tool handoff, no temperature, and no pictures here. Thinking and effort are the CLI's own flags.
+ * the CLI has no native tool handoff and no temperature. Pictures go in as image blocks (web.js). Thinking and effort are the CLI's own flags.
  */
 'use strict';
 

@@ -13,7 +13,7 @@
 
 const crypto = require('crypto');
 const { spawn } = require('child_process');
-const { childEnv, redact, streamReader, describeFailure, effortArgs, CHAT_TIMEOUT_MS } = require('./cli');
+const { childEnv, redact, streamReader, describeFailure, effortArgs, userLine, CHAT_TIMEOUT_MS } = require('./cli');
 
 const KILL_GRACE_MS = 2000;
 const CLOSE_GRACE_MS = 2500;
@@ -122,7 +122,7 @@ class WarmChat {
     if (event.type === 'result') this.settle(turn);
   }
 
-  ask(prompt, { onDelta = () => {}, signal = null, timeoutMs = CHAT_TIMEOUT_MS } = {}) {
+  ask(prompt, { images = [], onDelta = () => {}, signal = null, timeoutMs = CHAT_TIMEOUT_MS } = {}) {
     if (!this.alive()) return Promise.reject(this.deathError());
     if (this.current) return Promise.reject(Object.assign(new Error('The Qoder CLI is answering another turn.'), { retryable: true }));
     return new Promise((resolve, reject) => {
@@ -144,7 +144,7 @@ class WarmChat {
         signal.addEventListener('abort', turn.onAbort, { once: true });
       }
       try {
-        this.child.stdin.write(`${JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: prompt }] } })}\n`);
+        this.child.stdin.write(userLine(prompt, images));
       } catch (_) {
         this.kill();
       }
@@ -255,13 +255,13 @@ class WarmChat {
  * Opens a chat and asks its first question. A CLI that does not know one of the flags is asked again without it, before anything was spent: it refused the
  * command line, so no model call was made. A CLI that does not know `--input-format` cannot keep a chat, and the caller is told so.
  */
-async function openWarm({ cliPath, pat, configDir, cwd, model, thinking, thinkingLevel, prompt, signal = null, onDelta = () => {}, log = () => {}, timeoutMs = CHAT_TIMEOUT_MS }) {
+async function openWarm({ cliPath, pat, configDir, cwd, model, thinking, thinkingLevel, prompt, images = [], signal = null, onDelta = () => {}, log = () => {}, timeoutMs = CHAT_TIMEOUT_MS }) {
   let args = warmArgs({ configDir, model, thinking, thinkingLevel });
   let lastError = null;
   for (let attempt = 0; attempt < MAX_ARG_TRIES; attempt += 1) {
     const chat = new WarmChat({ cliPath, pat, args, cwd, log });
     try {
-      const out = await chat.ask(prompt, { signal, onDelta, timeoutMs });
+      const out = await chat.ask(prompt, { images, signal, onDelta, timeoutMs });
       return { chat, out, alive: chat.alive() };
     } catch (error) {
       lastError = error;

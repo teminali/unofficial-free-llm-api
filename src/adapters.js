@@ -126,6 +126,30 @@ function runEngine({ provider, chatBody, entry, meta, clientRes, live = {} }) {
 
 const textOf = (blocks) => (typeof blocks === 'string' ? blocks : (Array.isArray(blocks) ? blocks : []).map((b) => (b && typeof b === 'object' ? (b.type === 'text' ? b.text : (b.type === 'image' ? '[image omitted by the bridge]' : '')) : String(b || ''))).filter(Boolean).join('\n'));
 
+/** An Anthropic image or document block as the chat part the bridge reads (a picture, or a file it writes out or names as left out); null for any other block. */
+function anthropicPart(b) {
+  const src = b.source && typeof b.source === 'object' ? b.source : {};
+  if (b.type === 'image') {
+    if (src.type === 'base64') return { type: 'image_url', image_url: { url: `data:${src.media_type};base64,${src.data}` } };
+    return { type: 'image_url', image_url: { url: String(src.url || '') } };
+  }
+  if (b.type === 'document') {
+    const filename = String(b.title || 'document');
+    if (src.type === 'base64') return { type: 'file', file: { filename, file_data: `data:${src.media_type || 'application/octet-stream'};base64,${src.data}` } };
+    if (src.type === 'text') return { type: 'file', file: { filename, file_data: `data:${src.media_type || 'text/plain'};base64,${Buffer.from(String(src.data || '')).toString('base64')}` } };
+    return { type: 'file', file: { filename } };
+  }
+  return null;
+}
+
+/** Anthropic blocks as chat content: a string when they are words only, otherwise parts, so a picture or a file reaches the bridge instead of a note. */
+function contentOf(blocks) {
+  const list = typeof blocks === 'string' ? null : (Array.isArray(blocks) ? blocks : []);
+  if (!list || !list.some((b) => b && (b.type === 'image' || b.type === 'document'))) return textOf(blocks);
+  return list.map((b) => (b && typeof b === 'object' ? (anthropicPart(b) || (b.type === 'text' ? { type: 'text', text: String(b.text || '') } : null)) : (b ? { type: 'text', text: String(b) } : null))).filter(Boolean);
+}
+const withError = (content, isError) => (!isError ? content : (typeof content === 'string' ? `Error: ${content}` : [{ type: 'text', text: 'Error:' }, ...content]));
+
 /** The chat completion request an Anthropic Messages request means, or { error }. */
 function anthropicToChat(body) {
   if (!Array.isArray(body.messages) || !body.messages.length) return { error: { status: 400, message: '"messages" must be a non-empty array.' } };
@@ -142,9 +166,9 @@ function anthropicToChat(body) {
       continue;
     }
     // A user turn that answers tool calls: the results come first, each as a tool message, then whatever else the person said.
-    for (const b of blocks) if (b && b.type === 'tool_result') messages.push({ role: 'tool', tool_call_id: String(b.tool_use_id || ''), content: (b.is_error ? 'Error: ' : '') + textOf(b.content) });
-    const rest = textOf(blocks.filter((b) => b && b.type !== 'tool_result'));
-    if (rest) messages.push({ role: 'user', content: rest });
+    for (const b of blocks) if (b && b.type === 'tool_result') messages.push({ role: 'tool', tool_call_id: String(b.tool_use_id || ''), content: withError(contentOf(b.content), b.is_error) });
+    const rest = contentOf(blocks.filter((b) => b && b.type !== 'tool_result'));
+    if (rest.length) messages.push({ role: 'user', content: rest });
   }
   const tools = Array.isArray(body.tools) ? body.tools.filter((t) => t && t.name).map((t) => ({ type: 'function', function: { name: String(t.name), description: String(t.description || ''), parameters: t.input_schema && typeof t.input_schema === 'object' ? t.input_schema : { type: 'object', properties: {} } } })) : [];
   const budget = body.thinking && body.thinking.type === 'enabled' ? Number(body.thinking.budget_tokens) || 0 : 0;
@@ -247,6 +271,13 @@ function createResponseStore({ now = Date.now } = {}) {
 
 const partsText = (content) => (typeof content === 'string' ? content : (Array.isArray(content) ? content : []).map((p) => (p && typeof p === 'object' ? (typeof p.text === 'string' ? p.text : (/image/.test(String(p.type)) ? '[image omitted by the bridge]' : '')) : String(p || ''))).filter(Boolean).join('\n'));
 
+/** Responses content as chat content: a string when it is words only, otherwise parts (input_image and input_file are spellings the bridge reads). */
+function partsOf(content) {
+  const list = typeof content === 'string' ? null : (Array.isArray(content) ? content : []);
+  if (!list || !list.some((p) => p && (p.type === 'input_image' || p.type === 'input_file'))) return partsText(content);
+  return list.map((p) => (p && typeof p === 'object' ? (p.type === 'input_image' || p.type === 'input_file' ? p : (typeof p.text === 'string' ? { type: 'text', text: p.text } : null)) : (p ? { type: 'text', text: String(p) } : null))).filter(Boolean);
+}
+
 /** The chat completion request an OpenAI Responses request means (with the conversation it continues, when it names one), or { error }. */
 function responsesToChat(body, store) {
   const messages = [];
@@ -270,13 +301,13 @@ function responsesToChat(body, store) {
         flush();
         const role = item.role === 'developer' ? 'system' : item.role;
         if (!['system', 'user', 'assistant'].includes(role)) return { error: { status: 400, code: 'invalid_messages', message: `input item with role "${item.role}" is not supported.` } };
-        messages.push({ role, content: partsText(item.content) });
+        messages.push({ role, content: role === 'system' ? partsText(item.content) : partsOf(item.content) });
       } else if (type === 'function_call') {
         if (!pending) pending = { role: 'assistant', content: null, tool_calls: [] };
         pending.tool_calls.push({ id: String(item.call_id || item.id || id('call')), type: 'function', function: { name: String(item.name || ''), arguments: typeof item.arguments === 'string' ? item.arguments : JSON.stringify(item.arguments || {}) } });
       } else if (type === 'function_call_output') {
         flush();
-        messages.push({ role: 'tool', tool_call_id: String(item.call_id || ''), content: typeof item.output === 'string' ? item.output : JSON.stringify(item.output ?? '') });
+        messages.push({ role: 'tool', tool_call_id: String(item.call_id || ''), content: typeof item.output === 'string' ? item.output : (Array.isArray(item.output) ? partsOf(item.output) : JSON.stringify(item.output ?? '')) });
       } // a reasoning item, a web search call and the rest have no place in a text chat
     }
     flush();

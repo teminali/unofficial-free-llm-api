@@ -286,7 +286,9 @@ function warm() {
       const prompt = typeof content === 'string'
         ? content
         : (Array.isArray(content) ? content.filter((block) => block && block.type === 'text' && typeof block.text === 'string').map((block) => block.text).join('') : '');
-      logEvent({ event: 'turn', pid: process.pid, n: turns, text: prompt, at: Date.now() });
+      // What the turn carried, in order: `t` for words, `i:<media type>:<bytes>` for a picture block.
+      const blocks = Array.isArray(content) ? content.map((block) => (block && block.type === 'image' && block.source ? `i:${block.source.media_type}:${Buffer.from(String(block.source.data || ''), 'base64').length}` : 't')) : ['t'];
+      logEvent({ event: 'turn', pid: process.pid, n: turns, text: prompt, blocks, at: Date.now() });
       if (state.dieOnTurn === turns) process.exit(9);
       emit(turns);
     }

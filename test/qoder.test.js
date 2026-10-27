@@ -115,7 +115,7 @@ test('a personal access token links the account through the CLI: models, refs, a
       assert.equal(model.reasoning, true);
       assert.equal(model.thinking, false);
       assert.equal(model.escalate, false);
-      assert.equal(model.supportsVision, false);
+      assert.equal(model.supportsVision, true);
       assert.equal(model.context_length, 128000);
       assert.deepEqual(model.efforts, ['none', 'low', 'medium', 'high', 'xhigh', 'max']);
     }
@@ -258,18 +258,44 @@ test('tools are a text bridge: the call goes in the prompt and comes back as a t
   } finally { await ui.close(); }
 });
 
-test('a picture is left out in words because the CLI lane cannot carry one', async () => {
+test('a picture goes to the CLI as an image block right where the message put it', async () => {
   const ui = await boot();
   try {
     const { res } = await ui.send({
       model: 'qoder-qwen3-7-max',
-      messages: [{ role: 'user', content: [{ type: 'text', text: 'what is this' }, { type: 'image_url', image_url: { url: PNG } }] }]
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'what is this' }, { type: 'image_url', image_url: { url: PNG } }, { type: 'text', text: 'and say it short' }] }]
     });
     assert.equal(res.status, 200);
-    const prompt = ui.promptOf(ui.chatRuns()[0]);
-    assert.match(prompt, /what is this/);
-    assert.match(prompt, /\[image omitted by the bridge\]/);
-    assert.equal(prompt.includes('data:image'), false);
+    const run = ui.chatRuns()[0];
+    assert.equal(argAfter(run, '--input-format'), 'stream-json');
+    assert.equal(run.args.includes('--attachment'), false, 'a file path makes the models reach for a tool, so it is never used');
+    const prompt = ui.promptOf(run);
+    assert.match(prompt, /what is this\n\[attached image 1\]/);
+    assert.equal(prompt.includes('image omitted'), false);
+    assert.equal(prompt.includes('data:image'), false, 'the picture is a block, not text');
+    const turn = ui.turnEvents().find((entry) => entry.event === 'turn' && entry.pid === run.pid);
+    const bytes = Buffer.from(PNG.split(',')[1], 'base64').length;
+    assert.deepEqual(turn.blocks, ['t', `i:image/png:${bytes}`, 't']);
+  } finally { await ui.close(); }
+});
+
+test('only the newest four pictures go with a message, none too large, and the rest are named in the prompt', async () => {
+  const ui = await boot();
+  try {
+    const pic = (n) => ({ type: 'image_url', image_url: { url: `data:image/png;base64,${Buffer.from(`picture ${n}`).toString('base64')}` } });
+    const big = { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${Buffer.alloc(10 * 1048576 + 1, 7).toString('base64')}` } };
+    const { res } = await ui.send({
+      model: 'qoder-qwen3-7-max',
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'compare' }, pic(1), pic(2), pic(3), pic(4), big] }]
+    });
+    assert.equal(res.status, 200);
+    const run = ui.chatRuns()[0];
+    const turn = ui.turnEvents().find((entry) => entry.event === 'turn' && entry.pid === run.pid);
+    assert.deepEqual(turn.blocks.filter((b) => b !== 't').map((b) => b.split(':').slice(0, 2).join(':')), ['i:image/png', 'i:image/png', 'i:image/png']);
+    const prompt = ui.promptOf(run);
+    assert.match(prompt, /image 1: only the newest 4 pictures are sent/);
+    assert.match(prompt, /image 5: larger than 10 MB/);
+    assert.match(prompt, /NOT visible to you/);
   } finally { await ui.close(); }
 });
 

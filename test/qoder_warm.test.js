@@ -66,6 +66,9 @@ async function boot(state = {}) {
   };
 }
 
+const picture = (label) => ({ type: 'image_url', image_url: { url: `data:image/png;base64,${Buffer.from(label).toString('base64')}` } });
+const pictureBlock = (label) => `i:image/png:${Buffer.byteLength(label)}`;
+
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (_) { return false; } };
 const waitFor = async (check, ms = 6000) => {
   const end = Date.now() + ms;
@@ -311,5 +314,53 @@ test('a warm answer streams thinking and text as the CLI sends them', async () =
     assert.match(text, /"content":"Four\."/);
     assert.match(text, /"finish_reason":"stop"/);
     assert.match(text, /data: \[DONE\]/);
+  } finally { await ui.close(); }
+});
+
+test('a follow-up in a kept chat sends only its own new picture, as a block where it was put', async () => {
+  const ui = await boot({ answers: ['a login page', 'the second one is darker'] });
+  try {
+    const firstAsk = { role: 'user', content: [{ type: 'text', text: 'what is this' }, picture('first shot')] };
+    const first = await ui.send([firstAsk]);
+    assert.equal(first.res.status, 200);
+    const second = await ui.send([
+      firstAsk,
+      { role: 'assistant', content: ui.reply(first) },
+      { role: 'user', content: [{ type: 'text', text: 'and this one' }, picture('second shot')] }
+    ]);
+    assert.equal(second.res.status, 200);
+    assert.equal(ui.chats().length, 1, 'one process for both turns');
+    const turns = ui.turns();
+    assert.deepEqual(turns[0].blocks, ['t', pictureBlock('first shot')]);
+    assert.deepEqual(turns[1].blocks, ['t', pictureBlock('second shot')], 'the chat already holds the first picture');
+    assert.match(turns[1].text, /and this one\n\[attached image 2\]/, 'the numbers mean the same pictures as in the first turn');
+  } finally { await ui.close(); }
+});
+
+test('with sessions off a picture still goes as a block, in a one-message stream-json run', async () => {
+  const ui = await boot();
+  try {
+    await ui.provider.setSettings({ sessions: false });
+    const sent = await ui.send([{ role: 'user', content: [{ type: 'text', text: 'what is this' }, picture('a shot')] }]);
+    assert.equal(sent.res.status, 200);
+    assert.equal(ui.reply(sent), 'Hello from Qoder.');
+    const runs = ui.chats();
+    assert.equal(runs.length, 1);
+    assert.equal(argAfter(runs[0], '--input-format'), 'stream-json');
+    assert.deepEqual(ui.turns().find((entry) => entry.pid === runs[0].pid).blocks, ['t', pictureBlock('a shot')]);
+    assert.equal(ui.provider.engine.sessionInfo().open, 0, 'nothing was kept');
+  } finally { await ui.close(); }
+});
+
+test('a CLI that does not know --input-format is sent the words, and the prompt says the picture did not go', async () => {
+  const ui = await boot({ refuseInputStream: true });
+  try {
+    const sent = await ui.send([{ role: 'user', content: [{ type: 'text', text: 'what is this' }, picture('a shot')] }]);
+    assert.equal(sent.res.status, 200);
+    const saved = JSON.parse(fs.readFileSync(path.join(ui.dir, 'fake-state.json'), 'utf8'));
+    const plain = saved.runs.filter((run) => run.args.includes('--print') && !run.args.includes('--input-format'));
+    assert.equal(plain.length, 1);
+    assert.match(plain[0].stdin, /what is this\n\[attached image 1\]/);
+    assert.match(plain[0].stdin, /this Qoder CLI cannot take pictures\. Those pictures are NOT visible to you/);
   } finally { await ui.close(); }
 });

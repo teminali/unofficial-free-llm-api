@@ -35,7 +35,7 @@ function toModel(row, used) {
     thinking: false,
     reasoning: true,
     escalate: false,
-    supportsVision: false,
+    supportsVision: true,
     supportsThinking: true,
     supportsDisabled: true,
     efforts: [...EFFORTS],

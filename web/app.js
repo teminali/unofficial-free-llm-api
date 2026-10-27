@@ -1247,7 +1247,7 @@
       panel = h('div', { class: 'stack' },
         h('p', { class: 'muted', text: 'In Cline open the settings, choose the API provider "OpenAI Compatible", and fill in:' }),
         fieldRows([{ label: 'Base URL', value: `${base}/v1`, hint: 'with /v1' }, keyRow(), { label: 'Model ID', value: exampleModel(true), hint: 'agents with tools: deepseek-auto' }, { label: 'Context window', value: '64000', hint: 'under Model Configuration; a safe start' }]),
-        h('p', { class: 'muted small', text: 'Leave image support off: this API takes text only. The names of Cline\'s fields can differ a little between versions.' }));
+        h('p', { class: 'muted small', text: 'Turn image support on: DeepSeek and Qoder models take pictures sent inline. The names of Cline\'s fields can differ a little between versions.' }));
     } else if (S.tool === 'anthropic') {
       const a = anthropicSnippets(base, k, exampleModel(true));
       const ar = anthropicSnippets(base, real, exampleModel(true));

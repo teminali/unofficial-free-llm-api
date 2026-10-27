@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.8.0 (2026-10-27)
+
+### Added
+
+- **Pictures on Qoder.** A picture sent inline goes to the model as an image block of the CLI's stream-json input, right after its `[attached image N]` marker, in a
+  kept chat and in a one-off run alike; a follow-up sends only the pictures of its new messages. The newest four of a message go (10 MB each), and one left out is
+  named in the prompt. Every model the CLI listed on 2026-10-27 (DeepSeek, Qwen, Kimi, GLM, MiniMax, Auto, Efficient) read the heading of a test screenshot this way;
+  `--attachment` was tried and is not used, because it hands the model a file path that all but one model try to open with a tool. Qoder models now say
+  `supportsVision: true`. A CLI that refuses `--input-format` is sent the words and a note that the pictures did not go.
+- **Files.** A text file sent inline (a chat `file` part, a Responses `input_file`, an Anthropic `document`) is written into the prompt under its name, for every
+  provider, up to 200,000 characters. Any other file (a PDF, an archive, one named by id or address) is named in the prompt as left out. Before, a file part vanished
+  without a word.
+
+### Fixed
+
+- The Anthropic Messages and OpenAI Responses APIs passed pictures on as "[image omitted by the bridge]" even to a provider that takes them; they now pass the
+  picture (also inside a tool result), so DeepSeek and Qoder see it whichever API the client speaks.
+
 ## 0.7.0 (2026-10-26)
 
 ### Changed

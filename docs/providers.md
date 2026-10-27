@@ -69,7 +69,9 @@ Set `ULA_CHROME_PATH` if Chrome is somewhere unusual. Chromium and Edge are trie
 - **Tools, thinking and pictures.** There is no native tool handoff: tools go in the prompt as the text protocol the account-backed providers use
   (`<tool_call>{"name":"...","arguments":{...}}</tool_call>`), and the calls are read back and returned as `tool_calls`. `reasoning_effort` becomes the CLI's own
   `--reasoning-effort` (low, medium, high, xhigh, max); `none` becomes `--thinking disabled`, and a model whose thinking cannot be switched off gets
-  `--thinking enabled` when no effort was asked. A CLI run is text only, so a picture is replaced by a note in the prompt, and `temperature` has no flag: it is
+  `--thinking enabled` when no effort was asked. A picture goes in as an image block of a stream-json user message, right after its `[attached image N]` marker, in a
+  kept chat and in a one-off run alike (the newest four, 10 MB each; one left out is named in the prompt). `--attachment` is not used: it hands the model a file path,
+  and every model but one then tries to open it with a tool, which is off here. A CLI that refuses `--input-format` is sent the words and a note. `temperature` has no flag: it is
   named in `X-ULA-Ignored`.
 - **Why the prompt is still a transcript.** A new chat is given the whole conversation, including tool results, with the tool bridge when tools are offered; a
   continuation is given only the new messages. The CLI is told not to persist a session, so the conversation exists only in that process.

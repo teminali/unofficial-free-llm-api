@@ -62,6 +62,38 @@ const IMAGE_TYPES = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/jpg': 'jpg
 const IMAGE_MARK = /\[attached image (\d+)\]/g;
 
 const isImagePart = (part) => Boolean(part) && typeof part === 'object' && (part.type === 'image_url' || part.type === 'input_image');
+const isFilePart = (part) => Boolean(part) && typeof part === 'object' && (part.type === 'file' || part.type === 'input_file');
+
+const FILE_TEXT_CHARS = 200000;
+const TEXT_MIME = /^(?:text\/|application\/(?:json|ld\+json|xml|javascript|x-javascript|ecmascript|typescript|x-typescript|yaml|x-yaml|toml|x-toml|sql|graphql|x-sh|x-httpd-php|csv)$|application\/[a-z.-]+\+(?:json|xml)$)/i;
+
+/** Bytes with no NUL that decode as UTF-8: a text file that came without a type. */
+function looksText(bytes) {
+  if (bytes.subarray(0, 8192).includes(0)) return false;
+  try { new TextDecoder('utf-8', { fatal: true }).decode(bytes); return true; } catch (_) { return false; }
+}
+
+/**
+ * A file part (chat `{ type: 'file', file: { filename, file_data } }`, Responses `{ type: 'input_file', filename, file_data }`) as prompt text. A text file
+ * sent inline is written out under its name; any other file (a PDF, an archive, one named by id or address) is named as left out, so the model says so
+ * instead of answering as if it had read it. Only pictures and text reach a model through this bridge.
+ */
+function fileText(part) {
+  const f = part.type === 'file' ? (part.file && typeof part.file === 'object' ? part.file : {}) : part;
+  const name = String(f.filename || f.name || 'file').replace(/[\r\n"\]]/g, ' ').trim().slice(0, 120) || 'file';
+  const m = /^data:([^;,]*)((?:;[^;,]*)*),([\s\S]*)$/.exec(String(f.file_data || ''));
+  if (!m) return `[file "${name}" omitted by the bridge: only a file sent inline can be read]`;
+  const mime = (m[1] || 'application/octet-stream').toLowerCase();
+  let bytes;
+  try { bytes = /;base64/i.test(m[2]) ? Buffer.from(m[3].replace(/\s+/g, ''), 'base64') : Buffer.from(decodeURIComponent(m[3]), 'utf8'); } catch (_) { bytes = null; }
+  const unknown = mime === 'application/octet-stream' || !mime.includes('/');
+  if (!bytes || !(TEXT_MIME.test(mime) || (unknown && looksText(bytes)))) {
+    return `[file "${name}" (${mime}) omitted by the bridge: only pictures and text files reach the model. Its contents are NOT visible to you.]`;
+  }
+  const text = bytes.toString('utf8');
+  const cut = text.length > FILE_TEXT_CHARS ? `\n[... the rest of the file, ${text.length - FILE_TEXT_CHARS} characters, was cut by the bridge]` : '';
+  return `[attached file "${name}"]\n${text.slice(0, FILE_TEXT_CHARS)}${cut}\n[end of file "${name}"]`;
+}
 
 /** The picture an image part holds, { mime, ext, bytes, hash }, or null. Only a picture sent inline (a data: URL) is read: the bridge never goes to an address a client names. */
 function pictureOf(part) {
@@ -110,6 +142,7 @@ function contentToText(content, pictures = null) {
       if (!part || typeof part !== 'object') return '';
       if (typeof part.text === 'string') return part.text;
       if (isImagePart(part)) return (pictures && pictures.take(part)) || IMAGE_NOTE;
+      if (isFilePart(part)) return fileText(part);
       return '';
     }).filter(Boolean).join('\n');
   }
@@ -737,6 +770,6 @@ function bodyHold(text, bare) {
 
 module.exports = {
   buildPrompt, parseAnswer, markerHold, bareHold, fenceHold, bodyHold, opensCall, unreadableCall, thinkRequest, trailingRepeat, callSignature,
-  bridgeSection, fencedBridgeSection, jsonInstruction, contentToText, createPictures, pictureOf, IMAGE_NOTE, parseArgs, taskKeyOf, withThoughts, toolDefs, hasFileTools, closedJson, tryJson,
+  bridgeSection, fencedBridgeSection, jsonInstruction, contentToText, createPictures, pictureOf, fileText, IMAGE_NOTE, IMAGE_MARK, parseArgs, taskKeyOf, withThoughts, toolDefs, hasFileTools, closedJson, tryJson,
   stableJson, fingerprint, conversationFingerprints, toolsKey
 };

@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { buildPrompt, parseAnswer, markerHold, unreadableCall, fencedBridgeSection, jsonInstruction, trailingRepeat, createPictures, pictureOf, fingerprint, IMAGE_NOTE } = require('../src/bridge');
+const { buildPrompt, parseAnswer, markerHold, unreadableCall, fencedBridgeSection, jsonInstruction, trailingRepeat, createPictures, pictureOf, fingerprint, IMAGE_NOTE, fileText, contentToText } = require('../src/bridge');
 
 const TOOLS = [
   {
@@ -343,4 +343,21 @@ test('pictures: a chat that continues is sent only the new picture, and the numb
 test('pictures: two messages that differ only in the picture are not the same message', () => {
   assert.notEqual(fingerprint(withPicture('Same words', png('a'))), fingerprint(withPicture('Same words', png('b'))));
   assert.equal(fingerprint(withPicture('Same words', png('a'))), fingerprint(withPicture('Same words', png('a'))));
+});
+
+test('files: a text file is written out under its name, any other file is named as left out, never dropped in silence', () => {
+  const inline = (mime, body, filename = 'a.txt') => ({ type: 'file', file: { filename, file_data: `data:${mime};base64,${Buffer.from(body).toString('base64')}` } });
+  assert.equal(fileText(inline('text/markdown', '# Title\nbody', 'README.md')), '[attached file "README.md"]\n# Title\nbody\n[end of file "README.md"]');
+  assert.match(fileText(inline('application/json', '{"a":1}', 'a.json')), /\{"a":1\}/);
+  assert.match(fileText(inline('application/octet-stream', 'plain words', 'notes')), /plain words/, 'a file without a type that reads as text is text');
+  assert.match(fileText({ type: 'input_file', filename: 'b.txt', file_data: 'data:text/plain,hello%20there' }), /hello there/, 'the Responses spelling, not base64');
+  const pdf = fileText(inline('application/pdf', '%PDF-1.4 binary', 'invoice.pdf'));
+  assert.match(pdf, /^\[file "invoice\.pdf" \(application\/pdf\) omitted by the bridge/);
+  assert.match(pdf, /NOT visible to you/);
+  assert.equal(pdf.includes('PDF-1.4'), false);
+  assert.match(fileText(inline('application/octet-stream', Buffer.from([0, 1, 2, 255]), 'blob.bin')), /omitted by the bridge/);
+  assert.match(fileText({ type: 'file', file: { file_id: 'file-abc' } }), /\[file "file" omitted by the bridge: only a file sent inline can be read\]/);
+  const long = fileText(inline('text/plain', 'x'.repeat(200005)));
+  assert.match(long, /the rest of the file, 5 characters, was cut by the bridge/);
+  assert.match(contentToText([{ type: 'text', text: 'see' }, inline('text/plain', 'inside')]), /^see\n\[attached file "a\.txt"\]\ninside/);
 });

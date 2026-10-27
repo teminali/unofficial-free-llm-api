@@ -36,7 +36,7 @@ never a guessed model list.
 | Field | Supported |
 |---|---|
 | `model` | an id from `/v1/models`, with or without its provider (`deepseek/deepseek-chat`). Left out: the first model there is |
-| `messages` | `system`, `user`, `assistant` (with `tool_calls`) and `tool` messages. Pictures: on DeepSeek an image part with a `data:` URL is attached to the message as a file (the newest four, up to 10 MB each, `png`/`jpeg`/`gif`/`webp`); on Qoder (whose CLI run is text only), in the Anthropic and Responses APIs and for a picture given as an address, the part is replaced by a note |
+| `messages` | `system`, `user`, `assistant` (with `tool_calls`) and `tool` messages. Pictures: on DeepSeek an image part with a `data:` URL is attached to the message as a file (the newest four, up to 10 MB each, `png`/`jpeg`/`gif`/`webp`); on Qoder it goes to the model as an image block (the same limits). The Anthropic and Responses APIs pass pictures the same way. A picture given as an address is replaced by a note. Files: a text `file` part with a `data:` URL is written into the prompt under its name; any other file is named as left out |
 | `stream` | `true` for server-sent chunks ending in `data: [DONE]` |
 | `stream_options.include_usage` | adds a last chunk with `usage` |
 | `tools`, `tool_choice` | yes, see below. `tool_choice: "none"` sends the request as plain chat |

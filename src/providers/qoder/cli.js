@@ -14,6 +14,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
+const { IMAGE_MARK } = require('../../bridge');
 
 const LIST_TIMEOUT_MS = 120000;
 const CHAT_TIMEOUT_MS = 10 * 60 * 1000;
@@ -382,8 +383,38 @@ function lastJson(text) {
   return null;
 }
 
+/**
+ * One user turn as a stream-json line. Each picture goes in as an image block right after its `[attached image N]` marker, so the model sees it where the
+ * conversation put it; a picture whose marker the prompt does not hold goes at the end. This is the only way the CLI hands a picture to the model:
+ * `--attachment` passes a file path that every model but one tries to open with a tool, and tools are off here.
+ */
+function userLine(prompt, images = []) {
+  const text = String(prompt || '');
+  const pics = new Map((Array.isArray(images) ? images : []).map((pic) => [pic.n, pic]));
+  const block = (pic) => ({ type: 'image', source: { type: 'base64', media_type: pic.mime === 'image/jpg' ? 'image/jpeg' : pic.mime, data: pic.bytes.toString('base64') } });
+  const content = [];
+  const words = (part) => { if (part.trim()) content.push({ type: 'text', text: part }); };
+  let from = 0;
+  for (const m of text.matchAll(IMAGE_MARK)) {
+    const pic = pics.get(Number(m[1]));
+    if (!pic) continue;
+    const end = m.index + m[0].length;
+    words(text.slice(from, end));
+    content.push(block(pic));
+    pics.delete(pic.n);
+    from = end;
+  }
+  words(text.slice(from));
+  for (const pic of pics.values()) content.push(block(pic));
+  if (!content.length) content.push({ type: 'text', text });
+  return `${JSON.stringify({ type: 'user', message: { role: 'user', content } })}\n`;
+}
+
+/** Pictures left out of a prompt, said in it so the model does not guess what they show. */
+const pictureNote = (what) => `\n\n[Note from the bridge: ${what}. Those pictures are NOT visible to you. Say so if the answer depends on them; do not guess what they show.]`;
+
 function dropOption(args, flag) {
-  const valued = new Set(['--model', '--config-dir', '--output-format', '--tools', '--max-model-request-retries']);
+  const valued = new Set(['--model', '--config-dir', '--output-format', '--input-format', '--tools', '--max-model-request-retries']);
   const out = [];
   for (let i = 0; i < args.length; i += 1) {
     if (args[i] === flag) { if (valued.has(flag)) i += 1; continue; }
@@ -395,9 +426,10 @@ function dropOption(args, flag) {
 /**
  * One completion through the CLI. It asks for stream-json with partial messages when the CLI knows them, so the answer and the thinking stream as they come;
  * a CLI that refuses those flags is asked again for the plain JSON envelope. An unknown option is dropped and the same request is sent once more: the CLI
- * refused it before any model call, so nothing is spent twice.
+ * refused it before any model call, so nothing is spent twice. Pictures go in as one stream-json user message (userLine); a CLI that cannot read one is
+ * sent the words alone, with a note that the pictures were left out.
  */
-async function chat({ cliPath, pat, configDir, model, prompt, thinking, thinkingLevel, signal = null, onDelta = () => {}, log = () => {} }) {
+async function chat({ cliPath, pat, configDir, model, prompt, images = [], thinking, thinkingLevel, signal = null, onDelta = () => {}, log = () => {} }) {
   const started = Date.now();
   let firstOutputAt = 0;
   let args = [
@@ -409,6 +441,7 @@ async function chat({ cliPath, pat, configDir, model, prompt, thinking, thinking
     '--config-dir', configDir,
     '--no-session-persistence',
     '--max-model-request-retries', '0',
+    ...(images.length ? ['--input-format', 'stream-json'] : []),
     ...effortArgs(thinking, thinkingLevel)
   ];
   const at = (flag) => (args.includes(flag) ? ` ${args[args.indexOf(flag) + 1]}` : '');
@@ -429,7 +462,7 @@ async function chat({ cliPath, pat, configDir, model, prompt, thinking, thinking
       args,
       env: childEnv(pat),
       cwd: configDir,
-      input: prompt,
+      input: args.includes('--input-format') ? userLine(prompt, images) : `${prompt}${images.length ? pictureNote('this Qoder CLI cannot take pictures') : ''}`,
       signal,
       timeoutMs: CHAT_TIMEOUT_MS,
       onLine
@@ -462,7 +495,8 @@ async function chat({ cliPath, pat, configDir, model, prompt, thinking, thinking
       const unknown = /unknown option '([^']+)'/i.exec(result.stderr) || /unknown option "([^"]+)"/i.exec(result.stderr);
       if (unknown && args.includes(unknown[1])) { args = dropOption(args, unknown[1]); continue; }
       if (/stream-json/i.test(args.join(' ')) && /(allowed choices|invalid (?:value|choice)).{0,80}(json|text)/i.test(result.stderr)) {
-        args = args.map((arg, index) => (args[index - 1] === '--output-format' ? 'json' : arg)).filter((arg) => arg !== '--include-partial-messages');
+        // A picture needs stream-json both ways, so a CLI without it is sent the words alone.
+        args = dropOption(args.map((arg, index) => (args[index - 1] === '--output-format' ? 'json' : arg)).filter((arg) => arg !== '--include-partial-messages'), '--input-format');
         continue;
       }
     }
@@ -473,5 +507,5 @@ async function chat({ cliPath, pat, configDir, model, prompt, thinking, thinking
 
 module.exports = {
   LIST_TIMEOUT_MS, CHAT_TIMEOUT_MS, EXPIRED, KEY_HINT, CLI_MISSING, UNREACHABLE, EMPTY_MODELS,
-  cleanKey, findCli, childEnv, redact, runCli, parseModelList, listModels, effortArgs, chat, describeFailure, streamReader
+  cleanKey, findCli, childEnv, redact, runCli, parseModelList, listModels, effortArgs, chat, describeFailure, streamReader, userLine, pictureNote
 };

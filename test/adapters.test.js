@@ -329,6 +329,38 @@ test('Responses items become chat messages: consecutive function calls are one a
   assert.equal(chat.messages[2].tool_calls.length, 2);
 });
 
+test('pictures and files reach the bridge from both APIs instead of becoming a note', () => {
+  const B = require('../src/bridge');
+  const data = Buffer.from('a picture').toString('base64');
+  const text = Buffer.from('id,name\n1,Ada\n').toString('base64');
+  const { chat: fromAnthropic } = A.anthropicToChat({ model: 'm', max_tokens: 5, messages: [
+    { role: 'user', content: [
+      { type: 'text', text: 'look' },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data } },
+      { type: 'document', title: 'people.csv', source: { type: 'base64', media_type: 'text/csv', data: text } },
+      { type: 'document', title: 'notes', source: { type: 'text', media_type: 'text/plain', data: 'plain words' } }
+    ] },
+    { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_1', name: 'shot', input: {} }] },
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: [{ type: 'text', text: 'the page' }, { type: 'image', source: { type: 'base64', media_type: 'image/png', data } }] }] }
+  ] });
+  const store = A.createResponseStore();
+  const { chat: fromResponses } = A.responsesToChat({ model: 'm', input: [
+    { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'look' }, { type: 'input_image', image_url: `data:image/png;base64,${data}` }, { type: 'input_file', filename: 'people.csv', file_data: `data:text/csv;base64,${text}` }] }
+  ] }, store);
+  for (const chat of [fromAnthropic, fromResponses]) {
+    const pics = B.createPictures();
+    const prompt = B.buildPrompt(chat.messages, [], { images: pics });
+    assert.match(prompt, /look\n\[attached image 1\]/);
+    assert.match(prompt, /\[attached file "people\.csv"\]\nid,name\n1,Ada/);
+    assert.equal(prompt.includes('image omitted'), false);
+    assert.equal(pics.count, 1, 'the same picture twice is one picture');
+  }
+  assert.match(B.contentToText(fromAnthropic.messages[0].content), /\[attached file "notes"\]\nplain words/);
+  assert.deepEqual(fromAnthropic.messages[2].content.map((p) => p.type), ['text', 'image_url'], 'a picture in a tool result is kept too');
+  // Words only stay a string, as before.
+  assert.equal(A.anthropicToChat({ model: 'm', max_tokens: 5, messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }] }).chat.messages[0].content, 'hi');
+});
+
 test('the activity list says how long a request waited for its turn and how long the first word took, for every API', async () => {
   const t = await boot();
   try {

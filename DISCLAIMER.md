@@ -29,7 +29,7 @@ Developers will know what that means. Here it is in plain words anyway.
 - **Answers are the provider's answers.** No SLA, no usage guarantees, and the token counts in responses are estimates. On the website lane,
   features the website does not have (a temperature setting, images in, strict function calling) are not there, and tool calls are produced by
   asking the chat for a plain format and reading what comes back; they can be wrong. Qoder's CLI has a few more controls
-  (reasoning effort, thinking on or off). On Qoder, tools are still read from text, pictures are left out, and temperature is ignored. Either way the model can
+  (reasoning effort, thinking on or off). On Qoder, tools are still read from text, pictures go through, files other than text are left out, and temperature is ignored. Either way the model can
   call the wrong tool or write the wrong arguments.
   A provider can also put its own limit message in the answer as ordinary text, which this program returns as the answer.
 
