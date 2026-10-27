@@ -13,8 +13,9 @@
 const crypto = require('crypto');
 
 const TOOL_RESULT_CAP = 60000;
-// DeepSeek sometimes answers in its native DSML block form instead of the bridge format. Both are accepted.
-const DSML_MARK = '(?:｜|\\|){2,}';
+// DeepSeek sometimes answers in its native DSML block form instead of the bridge format. Both are accepted. The bars around "DSML" are two as a
+// rule, but a tag written with one (seen live: "</｜DSML｜｜ parameter>") is the same tag, so any count is read.
+const DSML_MARK = '(?:｜|\\|)+';
 
 
 /**
@@ -505,7 +506,7 @@ function unwrapArguments(args) {
 }
 
 function callFrom(value, allowed) {
-  let obj = typeof value === 'string' ? closedJson(value.replace(/<\/?\s*(?:｜|\|){2}\s*DSML[\s\S]*?>/gi, '').trim()) : value;
+  let obj = typeof value === 'string' ? closedJson(value.replace(/<\/?\s*(?:｜|\|)+\s*DSML[\s\S]*?>/gi, '').trim()) : value;
   if (obj && obj.function && typeof obj.function === 'object') obj = { name: obj.function.name, arguments: obj.function.arguments };
   if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return null;
   let name = String(obj.name || obj.tool || obj.tool_name || '');
@@ -629,7 +630,9 @@ function callsInDsml(body, allowed) {
       const key = p[1];
       if (!key) continue;
       const flag = p[2];
-      const raw = p[4] ? p[3] : p[3].replace(/\s+$/, ''); // ended at the next tag: the whitespace before it belongs to the markup
+      // a value never holds DSML markup: a piece of a tag too broken to read as one (a closer without its word) is cut off, not sent on in a path
+      const value = p[3].replace(new RegExp(`<\\s*\\/?\\s*${DSML_MARK}\\s*DSML[\\s\\S]*$`, 'i'), '');
+      const raw = p[4] && value === p[3] ? value : value.replace(/\s+$/, ''); // ended at the next tag: the whitespace before it belongs to the markup
       if (flag === 'true') { args[key] = raw; continue; }
       const parsed = tryJson(raw);
       args[key] = parsed == null ? raw : parsed;
@@ -656,7 +659,7 @@ function parseAnswer(text, tools) {
   }
   if (calls.length) {
     cleaned = cleaned.replace(/<tool_call>\s*[\s\S]*?(?:<\/tool_call>|$)/gi, '');
-    cleaned = cleaned.replace(/<\/?\s*(?:｜|\|){2}\s*DSML[\s\S]*?>/gi, '');
+    cleaned = cleaned.replace(/<\/?\s*(?:｜|\|)+\s*DSML[\s\S]*?>/gi, '');
   }
 
   if (!calls.length) {
@@ -706,7 +709,7 @@ function markerHold(text) {
     if ('<tool_call>'.startsWith(tail) || tail.startsWith('<tool_call>')) return at;
     if (/^<\s*$/.test(tail)) return at;
     if (/^<\s*(?:｜|\|)+$/.test(tail)) return at;
-    if (/^<\s*(?:｜|\|){2}/.test(tail)) return at;
+    if (/^<\s*(?:｜+|\|{2,})/.test(tail)) return at; // a full-width bar is never plain text; a plain one is markup only twice over
     at = text.indexOf('<', at + 1);
   }
   return -1;

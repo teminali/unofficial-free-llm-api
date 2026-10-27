@@ -1,6 +1,6 @@
 {
   "name": "unofficial-free-llm-api",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "A local OpenAI-compatible API and web playground for a DeepSeek chat account you already have, plus Qoder through its official CLI. Unofficial.",
   "license": "MIT",
   "author": "teminali",

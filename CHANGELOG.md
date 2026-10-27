@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.8.1 (2026-10-28)
+
+### Fixed
+
+- **A DeepSeek tool call written with uneven markup now lands.** DeepSeek's own DSML tags carry two bars around "DSML" as a rule, but now and then one (seen live
+  on Qoder's DeepSeek Flash: `</｜DSML｜｜ parameter>`). Such a tag was not read as a tag, so the value before it ran on into it and an edit went to the file
+  `index.html</｜DSML｜｜ parameter>`, which does not exist. Tags with any count of bars are read now, and a value never keeps a piece of DSML markup: a fragment too
+  broken to read as a tag is cut off the value instead of sent on in it.
+
 ## 0.8.0 (2026-10-27)
 
 ### Added

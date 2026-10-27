@@ -123,6 +123,20 @@ test('parseAnswer: reads a closing tag written where a tag opens, and never lets
   assert.deepEqual(JSON.parse(parsed.calls[0].arguments), { filePath: 'index.html', oldString: 'old', newString: 'new' });
 });
 
+test('parseAnswer: reads DSML marks of any bar count, and no value keeps a piece of the markup', () => {
+  // Seen live (Qoder, DeepSeek Flash, 2026-10-28): a closer written with one bar before DSML ("</｜DSML｜｜ parameter>"), so the path ran on into
+  // it and the edit was sent to "index.html</｜DSML｜｜ parameter>".
+  const uneven = '<｜｜DSML｜｜calls><｜DSML｜｜invoke name="edit"><｜｜DSML｜parameter name="filePath" string="true">index.html</｜DSML｜｜ parameter><｜DSML｜parameter name="oldString" string="true">old</｜DSML｜｜parameter><｜｜DSML｜｜parameter name="newString" string="true">new</｜｜DSML｜parameter></｜DSML｜invoke></｜｜DSML｜｜calls>';
+  const parsed = parseAnswer(uneven, EDIT_TOOLS);
+  assert.equal(parsed.calls.length, 1);
+  assert.deepEqual(JSON.parse(parsed.calls[0].arguments), { filePath: 'index.html', oldString: 'old', newString: 'new' });
+  // a closer too broken to be read as one (no "parameter" word) still never stays in the value
+  const stray = '<｜｜DSML｜｜calls><｜｜DSML｜｜invoke name="edit"><｜｜DSML｜｜parameter name="filePath" string="true">index.html</｜DSML｜｜ ><｜｜DSML｜｜parameter name="oldString" string="true">old</｜｜DSML｜｜parameter><｜｜DSML｜｜parameter name="newString" string="true">new</｜｜DSML｜｜parameter></｜｜DSML｜｜invoke></｜｜DSML｜｜calls>';
+  const parsedStray = parseAnswer(stray, EDIT_TOOLS);
+  assert.equal(parsedStray.calls.length, 1);
+  assert.equal(JSON.parse(parsedStray.calls[0].arguments).filePath, 'index.html');
+});
+
 test('parseAnswer: unwraps arguments wrapped in one more "arguments" layer', () => {
   const dsml = '<｜｜DSML｜｜calls><｜｜DSML｜｜invoke name="write"><｜｜DSML｜｜parameter name="arguments" string="true">{"filePath":"index.html","content":"hello"}</｜｜DSML｜｜parameter></｜｜DSML｜｜invoke></｜｜DSML｜｜calls>';
   const wrapped = parseAnswer(dsml, TOOLS);
