@@ -835,6 +835,21 @@ function unreadableCall(text, tools) {
   const shaped = /^\s*(?:```(?:json)?\s*)?\{\s*"name"\s*:\s*"[^"]+"\s*,\s*"arguments"\s*:/i.test(source) || opensCall(source);
   return shaped && parseAnswer(source, tools).calls.length === 0;
 }
+/**
+ * Tool calls in an answer to a request that offered no tools: the model reached for tools it does not have here (Qoder's CLI is an agent, and the
+ * model behind it asks to list folders and read files even when the request carries everything). Such an answer is not an answer: the engine asks
+ * again once, saying so, and never passes the markup on as the reply. Answers the names of the tools it reached for, or [] when it reached for none.
+ */
+function strayCalls(text, tools) {
+  if (toolDefs(tools).length) return [];
+  // the answer IS a call: it opens with the call markup and names a tool to invoke. An answer that talks about the markup (it explains how a call
+  // looks, a plain chat about tools) is text, and passes as it is
+  const source = String(text || '').trimStart();
+  const at = source.search(/<\s*(?:｜|\|)+\s*DSML|<tool_call>/i);
+  if (at !== 0) return [];
+  const names = [...source.matchAll(/invoke\s+name\s*=\s*"([^"]+)"/gi), ...source.matchAll(/"name"\s*:\s*"([^"]+)"/g)].map((m) => m[1]);
+  return [...new Set(names)];
+}
 /** The question of a `think` request in an answer, or null when the answer makes none. */
 function thinkRequest(text, tools) {
   const call = parseAnswer(text, tools).calls.find((c) => c.name === 'think');
@@ -851,7 +866,7 @@ function bodyHold(text, bare) {
 }
 
 module.exports = {
-  buildPrompt, parseAnswer, incompleteCalls, markerHold, bareHold, fenceHold, bodyHold, opensCall, unreadableCall, thinkRequest, trailingRepeat, callSignature,
+  buildPrompt, parseAnswer, incompleteCalls, markerHold, bareHold, fenceHold, bodyHold, opensCall, unreadableCall, strayCalls, thinkRequest, trailingRepeat, callSignature,
   bridgeSection, fencedBridgeSection, jsonInstruction, contentToText, createPictures, pictureOf, fileText, IMAGE_NOTE, IMAGE_MARK, parseArgs, taskKeyOf, withThoughts, toolDefs, hasFileTools, closedJson, tryJson,
   stableJson, fingerprint, conversationFingerprints, toolsKey
 };

@@ -43,6 +43,7 @@ const NO_MORE_THOUGHT = 'No more thinking is available in this step. Decide with
 const SPENT_NOTE = 'No more thinking is available in this task: do not ask for it again. Decide with what you have and act.';
 const thinkHint = (question) => `Think carefully about the question below and answer it. Do not call any tool and do not write files: give a clear, concrete answer, in at most 400 words, that the assistant can act on.\n\nQUESTION:\n${question}`;
 const REPAIR_NOTE = '\n\nNOTE: your last reply was a tool call that could not be read: it was cut off, or the quotes and line breaks inside it were not escaped. Reply again with only the corrected JSON object, in one fenced code block.';
+const NO_TOOLS_NOTE = '\n\nNOTE: your last reply was a tool call, but this conversation offers NO tools and there are NO files to read or commands to run: a tool call does nothing here. Everything you need is in the messages above. Answer again now in plain text, with the full answer itself.';
 const CUT_NOTE = '\n\nNOTE: your last reply was a tool call that was cut off before its end (a reply holds about 20,000 characters), so nothing was done. Reply again with the same kind of tool call, but keep it under 15,000 characters: write a big page as several files, or in parts (the first part with write, then the rest with edit calls that add to the end of the file).';
 
 // A call that came with a parameter its tool requires missing (its arguments not an object, or squashed into one value): asked again, naming what was missing.
@@ -265,6 +266,7 @@ function createChatEngine({ provider, governor = null, log = () => {}, onNotice 
     let releaseSlot = null;
     let emptyAnswers = 0;
     let unreadable = 0;
+    let strayAsks = 0; // answers that called tools the request did not offer
     let thinkAsks = 0; // in this request
     // One question to the reasoning mode, on a fresh chat, with the conversation so far (without the system prompt and the tool protocol: this call answers a
     // question, it does not act). What it thinks is streamed as the model's reasoning. Returns { answer } or { fatal } (a refusal, an expired sign-in or a
@@ -369,6 +371,19 @@ function createChatEngine({ provider, governor = null, log = () => {}, onNotice 
           }
           break;
         }
+        // tool calls when the request offered none: asked once more, saying there are no tools here
+        const reached = out.ok ? B.strayCalls(out.text, toolsAll) : [];
+        if (reached.length) {
+          strayAsks += 1;
+          log_(`the answer called ${reached.join(', ')} but the request offers no tools (attempt ${attempt} of ${EMPTY_ANSWER_ATTEMPTS})`);
+          if (attempt < EMPTY_ANSWER_ATTEMPTS && !(gov && !gov.checkLimit().allowed)) {
+            leaveSession();
+            resetHold();
+            prompt = basePrompt + NO_TOOLS_NOTE;
+            continue;
+          }
+          break;
+        }
         const incomplete = out.ok ? B.incompleteCalls(out.text, toolsAll) : [];
         if (incomplete.length) {
           unreadable += 1;
@@ -459,6 +474,12 @@ function createChatEngine({ provider, governor = null, log = () => {}, onNotice 
     const parsed = B.parseAnswer(answerText, toolsAll);
     const calls = parsed.calls.filter((c) => c.name !== 'think').map((call) => ({ ...call, id: `call_${crypto.randomBytes(8).toString('hex')}` }));
     log_(`${messages.length} messages, ${tools.length} tools, ${out.text.length} chars, ${calls.length} calls, ${Date.now() - started}ms`);
+    // Tool calls again after being told there are no tools: the markup is never passed on as the reply.
+    const strayed = out.ok && strayAsks > 0 ? B.strayCalls(out.text, toolsAll) : [];
+    if (strayed.length) {
+      notice({ kind: 'unreadable', short: `${p.name} answered with tool calls although no tools were offered` });
+      return fail(502, `${p.id}_tool_call_without_tools`, `${p.name} answered with tool calls (${strayed.join(', ')}) twice, although this request offers no tools, so there was no answer to pass on. Ask again, or offer the tools it needs.`);
+    }
     // Still unreadable after the second try: the damaged call is not shown as the answer (a page's mangled copy of a file).
     if (unreadable > 0 && !calls.length && B.unreadableCall(out.text, toolsAll)) {
       notice({ kind: 'unreadable', short: `${p.name} sent a tool call that could not be read` });
