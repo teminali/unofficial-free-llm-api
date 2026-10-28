@@ -19,16 +19,20 @@ const DSML_MARK = '(?:｜|\\|)+';
 
 
 /**
- * What a tool call aims at: its name and its short arguments (a path, a command). The long ones (the contents of a file) differ on every pass of a
- * loop, so they are left out; a call with no short argument has no signature and is never counted as a repeat.
+ * What a tool call aims at: its name and its short arguments (a path, a command). A file's whole contents differ on every pass of a loop, so they are
+ * left out (forty rewrites of one file are one step repeated); an edit's long old and new text say which change it makes, so they count, as a hash
+ * (three different edits to one file are three steps, seen 2026-10-28 on a copy tuning its stylesheet). A call with no short argument has no signature
+ * and is never counted as a repeat.
  */
+const WHOLE_FILE = /^(content|contents|text|code|body|data)$/i;
 function callSignature(call) {
   const f = call && call.function ? call.function : {};
   const args = parseArgs(f.arguments) || {};
   const short = Object.keys(args).sort().filter((k) => (typeof args[k] === 'string' && args[k].length <= 200) || typeof args[k] === 'number' || typeof args[k] === 'boolean');
   if (!f.name || !short.length) return null;
+  const long = Object.keys(args).sort().filter((k) => typeof args[k] === 'string' && args[k].length > 200 && !WHOLE_FILE.test(k));
   const pathKey = short.find((k) => /path|file/i.test(k) && typeof args[k] === 'string') || short.find((k) => typeof args[k] === 'string');
-  return { key: `${f.name}|${short.map((k) => `${k}=${args[k]}`).join('|')}`, label: `${f.name}${pathKey ? ` ${String(args[pathKey]).split('/').filter(Boolean).pop() || args[pathKey]}` : ''}` };
+  return { key: `${f.name}|${[...short.map((k) => `${k}=${args[k]}`), ...long.map((k) => `${k}#${shortHash(args[k])}`)].join('|')}`, label: `${f.name}${pathKey ? ` ${String(args[pathKey]).split('/').filter(Boolean).pop() || args[pathKey]}` : ''}` };
 }
 
 /**
@@ -222,10 +226,22 @@ function closedJson(text) {
   return tryJson(source + stack.reverse().join(''));
 }
 
+/**
+ * Arguments written as a string with their quotes escaped once too often ("{\\"filePath\\": ...}" as text that is not JSON as it stands): read with one
+ * level of escaping taken off. Null when that does not give an object.
+ */
+function unescapedJson(text) {
+  if (typeof text !== 'string' || !/\\"/.test(text)) return null;
+  let decoded;
+  try { decoded = JSON.parse(`"${sanitizeJsonControlChars(text).replace(/(^|[^\\])"/g, '$1\\"').replace(/(^|[^\\])"/g, '$1\\"')}"`); } catch (_) { return null; }
+  const obj = closedJson(decoded);
+  return obj && typeof obj === 'object' && !Array.isArray(obj) ? obj : null;
+}
+
 function parseArgs(value) {
   let parsed = null;
   if (typeof value === 'string') {
-    parsed = tryJson(value);
+    parsed = tryJson(value) || closedJson(value) || unescapedJson(value);
   } else if (value && typeof value === 'object' && !Array.isArray(value)) {
     parsed = { ...value };
   }
@@ -347,7 +363,8 @@ function sharedRules(tools, options = {}) {
   const rules = [
     'Call a tool only when the request needs one. When it does not, answer in plain words and call nothing.',
     ...(files ? ['To create or change files, use the file tools. Do not output raw code into the chat.'] : []),
-    'After a TOOL RESULT line, continue: call the next tool, or give the final answer when the task is complete. Never invent a tool result.'
+    'After a TOOL RESULT line, continue: call the next tool, or give the final answer when the task is complete. Never invent a tool result.',
+    'The arguments are a JSON object, never a string. Escape a double quote or a line break only inside a string value, as \\" and \\n; the quotes around the keys and the values stay plain: {"filePath":"a.css","oldString":"a {\\n  color: red;\\n}"}. Give every parameter the tool requires.'
   ];
   if (options.replyChars) {
     rules.push(`One reply of yours holds about ${options.replyChars.toLocaleString('en-US')} characters, and a call that does not fit is cut off and lost. Keep every call under about ${options.callChars.toLocaleString('en-US')} characters${files ? ': split a big page into several files (a stylesheet, a script), or write the file in parts, a first "write" and then "edit" calls that add to the end' : ''}.`);
@@ -396,7 +413,7 @@ function fencedBridgeSection(tools, options = {}) {
     '{"name":"TOOL_NAME","arguments":{"argument":"value"}}',
     '```',
     'Always use the fenced block. This chat shows every reply as formatted text, and outside a code block it removes backslashes and anything that looks like HTML, which breaks the call.',
-    'The arguments value is a JSON object matching that tool\'s parameters. Inside the JSON, escape every double quote as \\" and every line break as \\n so the object stays valid JSON.',
+    'The arguments value is a JSON object matching that tool\'s parameters.',
     ...sharedRules(tools, options),
     ...(options.fileChars && hasFileTools(tools) ? [`Keep every file under about ${options.fileChars.toLocaleString('en-US')} characters. Compact, complete code is better than a long answer that is cut off before its end.`] : []),
     'Available tools:',
@@ -642,8 +659,70 @@ function callsInDsml(body, allowed) {
   return out;
 }
 
+/** The parameters a tool takes, and the ones it requires, from the request's own tool list. */
+function paramsOf(tools, name) {
+  const f = toolDefs(tools).find((d) => d.name === name);
+  const schema = f && f.parameters && typeof f.parameters === 'object' ? f.parameters : {};
+  return { known: new Set(Object.keys(schema.properties || {})), required: Array.isArray(schema.required) ? schema.required.map(String) : [], props: schema.properties || {} };
+}
+
+/** Whether a value is of the JSON type a schema names (a schema with no single type, or a type this does not know, takes anything). */
+function ofType(value, type) {
+  if (type === 'string') return typeof value === 'string';
+  if (type === 'number') return typeof value === 'number' && Number.isFinite(value);
+  if (type === 'integer') return Number.isInteger(value);
+  if (type === 'boolean') return typeof value === 'boolean';
+  if (type === 'array') return Array.isArray(value);
+  if (type === 'object') return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+  return true;
+}
+
+/**
+ * Arguments squashed into one value: the model escaped the quotes that hold the object together ({"filePath": "/a.css\\",\\"oldString\\":\\"...\\"}"}),
+ * so the first value carries the rest of the object (seen 2026-10-28 on DeepSeek, an edit whose path held its old and new strings). Read back from that
+ * value, only for a call that lacks a parameter it requires, and only when that gives the tool's own parameters.
+ */
+function unsquash(args, known) {
+  for (const [key, value] of Object.entries(args)) {
+    if (typeof value !== 'string' || !/",\s*"[A-Za-z_]\w*"\s*:/.test(value)) continue;
+    const obj = closedJson(`{"${key}":"${value}${/"\s*}\s*$/.test(value) ? '' : '"}'}`);
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) continue;
+    if (Object.keys(obj).some((k) => k !== key && known.has(k) && !(k in args))) return { ...args, ...obj };
+  }
+  return args;
+}
+
+/** The required parameters a call lacks, or holds as the wrong type (a path given as true, seen 2026-10-28): an empty list when all are there. */
+function missingOf(call, tools) {
+  const { required, props } = paramsOf(tools, call.name);
+  if (!required.length) return [];
+  const args = parseArgs(call.arguments) || {};
+  return required.filter((k) => args[k] == null || args[k] === '' || !ofType(args[k], props[k] && typeof props[k].type === 'string' ? props[k].type : null));
+}
+
+/** A call whose arguments lack a parameter its tool requires is mended where the rest of its object is in one value (unsquash); otherwise it is as it came. */
+function mended(call, tools) {
+  if (!missingOf(call, tools).length) return call;
+  const args = parseArgs(call.arguments) || {};
+  const fixed = unsquash(args, paramsOf(tools, call.name).known);
+  return fixed === args ? call : { ...call, arguments: JSON.stringify(fixed) };
+}
+
+/**
+ * The calls in an answer that still lack a parameter their tool requires, after mending: "edit (no filePath, oldString)". Such a call is never handed on
+ * as it is: the bridge asks the chat again (engine.js), so the agent is not left to work out why its call arrived empty.
+ */
+function incompleteCalls(text, tools) {
+  return parseAnswer(text, tools).calls.filter((c) => c.name !== 'think').map((c) => ({ name: c.name, missing: missingOf(c, tools) })).filter((c) => c.missing.length).map((c) => `${c.name} (no usable ${c.missing.join(', ')})`);
+}
+
 /** Splits the answer into tool calls and the words around them. Only tools the request offered are accepted. */
 function parseAnswer(text, tools) {
+  const found = splitAnswer(text, tools);
+  return { ...found, calls: found.calls.map((c) => mended(c, tools)) };
+}
+
+function splitAnswer(text, tools) {
   const source = String(text || '');
   const allowed = new Set(toolDefs(tools).map((f) => f.name));
   // A request that offered no tools is a plain chat: nothing in its answer is a call, whatever shape it has (a JSON object with a "name" and "arguments", say).
@@ -772,7 +851,7 @@ function bodyHold(text, bare) {
 }
 
 module.exports = {
-  buildPrompt, parseAnswer, markerHold, bareHold, fenceHold, bodyHold, opensCall, unreadableCall, thinkRequest, trailingRepeat, callSignature,
+  buildPrompt, parseAnswer, incompleteCalls, markerHold, bareHold, fenceHold, bodyHold, opensCall, unreadableCall, thinkRequest, trailingRepeat, callSignature,
   bridgeSection, fencedBridgeSection, jsonInstruction, contentToText, createPictures, pictureOf, fileText, IMAGE_NOTE, IMAGE_MARK, parseArgs, taskKeyOf, withThoughts, toolDefs, hasFileTools, closedJson, tryJson,
   stableJson, fingerprint, conversationFingerprints, toolsKey
 };

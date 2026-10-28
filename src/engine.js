@@ -45,6 +45,9 @@ const thinkHint = (question) => `Think carefully about the question below and an
 const REPAIR_NOTE = '\n\nNOTE: your last reply was a tool call that could not be read: it was cut off, or the quotes and line breaks inside it were not escaped. Reply again with only the corrected JSON object, in one fenced code block.';
 const CUT_NOTE = '\n\nNOTE: your last reply was a tool call that was cut off before its end (a reply holds about 20,000 characters), so nothing was done. Reply again with the same kind of tool call, but keep it under 15,000 characters: write a big page as several files, or in parts (the first part with write, then the rest with edit calls that add to the end of the file).';
 
+// A call that came with a parameter its tool requires missing (its arguments not an object, or squashed into one value): asked again, naming what was missing.
+const incompleteNote = (calls) => `\n\nNOTE: your last reply had tool calls whose arguments could not be read: ${calls.join('; ')}. Reply again with the same calls, each with its arguments as a JSON object (not a string) that holds every parameter the tool requires; escape a double quote or a line break only inside a string value.`;
+
 const estimateTokens = (chars) => Math.ceil(Number(chars || 0) / 4);
 
 /** A call counts against the account when its message went out: an answer, a refusal, or a caller who left after the send. Not a refused sign-in, not a caller who left first, not a connection that failed before the send. */
@@ -365,6 +368,19 @@ function createChatEngine({ provider, governor = null, log = () => {}, onNotice 
             continue;
           }
           break;
+        }
+        const incomplete = out.ok ? B.incompleteCalls(out.text, toolsAll) : [];
+        if (incomplete.length) {
+          unreadable += 1;
+          log_(`tool calls without a required parameter: ${incomplete.join('; ').slice(0, 200)} (attempt ${attempt} of ${EMPTY_ANSWER_ATTEMPTS})`);
+          if (attempt < EMPTY_ANSWER_ATTEMPTS && !(gov && !gov.checkLimit().allowed)) {
+            leaveSession();
+            resetHold();
+            prompt = basePrompt + incompleteNote(incomplete);
+            repairing = true;
+            continue;
+          }
+          // asked twice: the calls go on as they are, and the agent's tool says what each one lacks
         }
         // The plain chat asked to think: the reasoning model gets that one question, its answer goes back to the plain chat, and the plain chat carries on.
         if (out.ok && offerThink && thinkAsks <= MAX_THINKS) {

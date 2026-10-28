@@ -375,3 +375,50 @@ test('files: a text file is written out under its name, any other file is named 
   assert.match(long, /the rest of the file, 5 characters, was cut by the bridge/);
   assert.match(contentToText([{ type: 'text', text: 'see' }, inline('text/plain', 'inside')]), /^see\n\[attached file "a\.txt"\]\ninside/);
 });
+
+// 2026-10-28, DeepSeek through Lens: of seven edits in one reply, six reached the agent with no arguments and one with its whole object in filePath.
+const SQUASH_TOOLS = [{ type: 'function', function: { name: 'edit', description: 'Edit a file', parameters: { type: 'object', properties: { filePath: { type: 'string' }, oldString: { type: 'string' }, newString: { type: 'string' } }, required: ['filePath', 'oldString', 'newString'] } } }];
+
+test('an edit whose arguments were squashed into its path is read back whole', () => {
+  // the quotes that hold the object together escaped, so the first value carries the rest (the trace's own shape)
+  const answer = '<tool_call>{"name":"edit","arguments":{"filePath":"/w/styles/page.css\\",\\"oldString\\":\\"  margin: 0;\\\\n  font-size: 13px;\\",\\"newString\\":\\"  margin: 4px;\\\\n  font-size: 13px;\\"}"}}</tool_call>';
+  const { calls } = require('../src/bridge').parseAnswer(answer, SQUASH_TOOLS);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(JSON.parse(calls[0].arguments), { filePath: '/w/styles/page.css', oldString: '  margin: 0;\n  font-size: 13px;', newString: '  margin: 4px;\n  font-size: 13px;' });
+});
+
+test('arguments written as a string with their quotes escaped once too often are read', () => {
+  const answer = '<tool_call>{"name":"edit","arguments":"{\\\\\\"filePath\\\\\\":\\\\\\"a.css\\\\\\",\\\\\\"oldString\\\\\\":\\\\\\"x\\\\\\",\\\\\\"newString\\\\\\":\\\\\\"y\\\\\\"}"}</tool_call>';
+  const { calls } = require('../src/bridge').parseAnswer(answer, SQUASH_TOOLS);
+  assert.deepEqual(JSON.parse(calls[0].arguments), { filePath: 'a.css', oldString: 'x', newString: 'y' });
+});
+
+test('a call that still lacks a required parameter is named, so the bridge asks again instead of handing on an empty call', () => {
+  const { incompleteCalls } = require('../src/bridge');
+  const broken = '<tool_call>{"name":"edit","arguments":"{not json at all"}</tool_call><tool_call>{"name":"edit","arguments":{"filePath":"a.css","oldString":"x","newString":"y"}}</tool_call>';
+  assert.deepEqual(incompleteCalls(broken, SQUASH_TOOLS), ['edit (no usable filePath, oldString, newString)']);
+  // a required path given as true is as good as none
+  assert.deepEqual(incompleteCalls('<tool_call>{"name":"edit","arguments":{"filePath":true,"oldString":"x","newString":"y"}}</tool_call>', SQUASH_TOOLS), ['edit (no usable filePath)']);
+  assert.deepEqual(incompleteCalls('<tool_call>{"name":"edit","arguments":{"filePath":"a.css","oldString":"x","newString":"y"}}</tool_call>', SQUASH_TOOLS), []);
+  // a value that only looks like a JSON tail is left alone when the call already has what it needs
+  const json = '<tool_call>{"name":"edit","arguments":{"filePath":"p.json","oldString":"\\"a\\",\\"b\\":1","newString":"\\"a\\",\\"c\\":2"}}</tool_call>';
+  assert.deepEqual(JSON.parse(require('../src/bridge').parseAnswer(json, SQUASH_TOOLS).calls[0].arguments), { filePath: 'p.json', oldString: '"a","b":1', newString: '"a","c":2' });
+});
+
+test('the tool rules say the arguments are an object and where escaping belongs', () => {
+  const prompt = buildPrompt([{ role: 'user', content: 'hi' }], SQUASH_TOOLS);
+  assert.match(prompt, /The arguments are a JSON object, never a string\. Escape a double quote or a line break only inside a string value/);
+  assert.doesNotMatch(fencedBridgeSection(SQUASH_TOOLS), /escape every double quote/);
+});
+
+test('different long edits to one file are steps, not a loop; the same edit three times, or whole rewrites, still are', () => {
+  const { trailingRepeat } = require('../src/bridge');
+  const turn = (args) => [{ role: 'assistant', content: null, tool_calls: [{ id: 'c', type: 'function', function: { name: args.content ? 'write' : 'edit', arguments: JSON.stringify(args) } }] }, { role: 'tool', tool_call_id: 'c', content: 'ok' }];
+  const long = (n) => `.card {\n  margin: ${n}px;\n}\n${'/* a long rule */\n'.repeat(20)}`;
+  const edits = [1, 2, 3].flatMap((n) => turn({ filePath: 'styles/page.css', oldString: long(n), newString: long(n + 1) }));
+  assert.equal(trailingRepeat(edits).count, 1);
+  const same = [1, 1, 1].flatMap((n) => turn({ filePath: 'styles/page.css', oldString: long(n), newString: long(n + 1) }));
+  assert.equal(trailingRepeat(same).count, 3);
+  const rewrites = [1, 2, 3].flatMap((n) => turn({ filePath: 'index.html', content: long(n) }));
+  assert.equal(trailingRepeat(rewrites).count, 3);
+});
