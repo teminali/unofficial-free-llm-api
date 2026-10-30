@@ -10,6 +10,13 @@
   each paying the full wait for its first word; the request prefixes themselves matched at every step. A chat is now given up only when it holds clearly more
   (`maxOverhead`, 1.5 times) than a new chat would be told, or after its request limit. Replaying the prompt sizes of a real 26-step Lens task: 25 steps
   continue one chat (before: 3), and about 0.27 M characters are sent instead of 5.35 M. Qoder's kept chats use the same rule.
+- **DeepSeek tool calls with broken arguments are read by the tool's own parameter names.** Seen in Lens Code runs: edits arrived without a path and failed as
+  "Couldn't write file", though the model had written every argument. A parameter in another naming style (`file_path`, `old-string`, `FilePath`) is the tool's
+  own; arguments whose quotes were escaped partway are read by parameter name at whatever level each sits (taken only when that gives every required
+  parameter); a DSML parameter tag that lost its `parameter name=` is read by its word.
+- **A tool call in an answer to a request without tools is asked again.** Qoder's model sometimes answered such a request with tool-call markup. The engine asks
+  again with a note that no tools are available; a second tool call fails with `<provider>_tool_call_without_tools` (502) instead of handing the markup back as
+  the answer. Markup only mentioned inside prose is not a tool call.
 
 ### Added
 
