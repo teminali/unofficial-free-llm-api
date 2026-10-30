@@ -58,7 +58,8 @@ Not streaming:
 { "id": "chatcmpl-ds-...", "object": "chat.completion", "model": "deepseek-reasoner",
   "choices": [{ "index": 0, "finish_reason": "stop",
     "message": { "role": "assistant", "content": "Forty-two.", "reasoning_content": "Let me work it out." } }],
-  "usage": { "prompt_tokens": 12, "completion_tokens": 20, "total_tokens": 32, "completion_tokens_details": { "reasoning_tokens": 6 } } }
+  "usage": { "prompt_tokens": 12, "completion_tokens": 20, "total_tokens": 32, "completion_tokens_details": { "reasoning_tokens": 6 },
+             "prompt_tokens_details": { "cached_tokens": 0 } } }
 ```
 
 `usage` is an **estimate** (characters divided by four), the same for every provider: the website chats report no token counts, and the answer keeps one shape.
@@ -82,12 +83,16 @@ then returns it as `tool_calls` with `finish_reason: "tool_calls"`. Run the tool
 A web chat remembers its conversation; an API request repeats it. The bridge puts the two together: a request whose first messages are exactly the ones an open
 chat already holds (compared by hash; nothing of the text is kept) goes into that chat and carries only its new messages. Anything that does not fit starts a new
 chat. What makes a request a different conversation: another model, other `tools`, another system prompt, an earlier message that was changed or dropped, or a
-different `user` / `X-ULA-Session` name. The usage numbers still count the whole conversation, as any API would.
+different `user` / `X-ULA-Session` name. The usage numbers still count the whole conversation, as any API would, and say how much of it the chat already held:
+`usage.prompt_tokens_details.cached_tokens` is the estimated size of what a continued chat already had (everything but the new messages), and 0 for a new chat. The
+Anthropic API reports the same as `cache_read_input_tokens` (with `input_tokens` the part that was not cached), the Responses API as
+`usage.input_tokens_details.cached_tokens`. Like the rest of `usage` it is an estimate; a nonzero value is how a client sees that its conversation was continued.
 
-Chats are closed after 20 minutes without a request, when more than 6 are open, when one grows past about 150,000 characters or 80 requests, and when the program
-stops. The DeepSeek chats this program created are deleted; a chat it did not create is never touched. Turn this off with `--no-sessions`, `ULA_SESSIONS=0` or the switch
+Chats are closed after 20 minutes without a request, when more than 6 are open, after 80 requests, and when the program stops. A chat past 150,000 characters is
+given up for a new one only when it holds clearly more (1.5 times) than the new chat would be told: a new chat is told the whole conversation, so a chat about as long as
+its conversation (an agent's task, growing step by step) goes on in the same chat however long it gets. The DeepSeek chats this program created are deleted; a chat it did not create is never touched. Turn this off with `--no-sessions`, `ULA_SESSIONS=0` or the switch
 on the Accounts page. Qoder applies the same idea with one CLI process per conversation instead of a chat on its side: the first request starts it, each follow-up carries
-only the new messages, and at most three are open, each closed after ten idle minutes, twenty-four requests or 150,000 characters. The chat lives in that process only;
+only the new messages, and at most three are open, each closed after ten idle minutes or twenty-four requests, or past 150,000 characters by the same rule as DeepSeek's. The chat lives in that process only;
 the CLI is told not to persist a session, so no transcript is written to disk, and a process that ends is replaced by a new chat on the next request. A CLI that refuses
 the stream-json input flag falls back to one process per request.
 

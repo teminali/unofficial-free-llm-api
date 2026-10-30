@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.9.0 (2026-10-30)
+
+### Fixed
+
+- **An agent's long task stays in one chat.** A kept chat past 150,000 characters was given up for a new one at the next request. A new chat is told the whole
+  conversation, so for a coding agent (a long system prompt and tool list, then one tool step after another) the new chat was past the limit from its first
+  request, and every later step opened yet another chat that was sent everything again. Seen live with Lens on a DeepSeek account: 23 steps, each a new chat,
+  each paying the full wait for its first word; the request prefixes themselves matched at every step. A chat is now given up only when it holds clearly more
+  (`maxOverhead`, 1.5 times) than a new chat would be told, or after its request limit. Replaying the prompt sizes of a real 26-step Lens task: 25 steps
+  continue one chat (before: 3), and about 0.27 M characters are sent instead of 5.35 M. Qoder's kept chats use the same rule.
+
+### Added
+
+- **Cached input tokens.** `usage.prompt_tokens_details.cached_tokens` is now always there: the estimated tokens of what a continued chat already held (all but the
+  new messages), 0 for a new chat, in streamed and whole answers. The Anthropic API reports it as `cache_read_input_tokens`, with `input_tokens` the part that was not
+  cached, and the Responses API as `usage.input_tokens_details.cached_tokens` (it was always 0). `prompt_tokens` still counts the whole conversation.
+
 ## 0.8.1 (2026-10-28)
 
 ### Fixed

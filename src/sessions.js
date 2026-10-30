@@ -19,8 +19,9 @@
 const DEFAULTS = Object.freeze({
   ttlMs: 20 * 60 * 1000,      // a session nobody continued for this long is closed
   maxSessions: 6,             // open sessions at once; the one used longest ago is closed to make room
-  maxChars: 150000,           // what a chat has been sent and has answered, in characters; past this the next request starts a new chat
-  maxTurns: 80,               // the same, in requests
+  maxChars: 150000,           // what a chat has been sent and has answered, in characters; past this a new chat is started, if it would be told much less (maxOverhead)
+  maxOverhead: 1.5,           // a long chat is only given up for a new one when the chat holds this many times what the new chat would be sent
+  maxTurns: 80,               // a chat that has answered this many requests is given up for a new one
   closeGapMs: 1500,           // between two removals
   sweepMs: 60 * 1000
 });
@@ -77,11 +78,24 @@ function createSessionStore({ close = async () => {}, persist = null, now = Date
   }
 
   /**
+   * A chat is given up for a new one when going on in it is worse than starting again. A new chat is told the whole conversation, so a chat whose length is
+   * about the conversation's own (all an agent's chat ever is: one task, growing step by step) is never too long: the new chat would be just as long, and
+   * every step after it would start yet another one, sent everything again. What a new chat sheds is what the kept one gathered on top of the
+   * conversation (the bridge's rules said again, answers that were asked again), so the chat is too long only when it holds clearly more than a new chat
+   * would be sent (maxOverhead), or when it has answered maxTurns requests.
+   */
+  function tooLong(s, freshChars) {
+    if (s.turns >= cfg.maxTurns) return true;
+    if (s.chars < cfg.maxChars) return false;
+    return !(freshChars > 0) || s.chars >= freshChars * cfg.maxOverhead;
+  }
+
+  /**
    * The session a request continues, or none. `key` names what a session is for (model, thinking level, tools), `tag` is a name the caller gave (or ''), `hashes` is
-   * [system hash, ...one hash for each message of the request]. Returns { session, from } where `from` is how many of the request's messages the chat already
+   * [system hash, ...one hash for each message of the request], `freshChars` the length of the prompt a new chat would be sent for this request (0: not known). Returns { session, from } where `from` is how many of the request's messages the chat already
    * holds (not counting the system hash), or { session: null, reason: 'new' | 'diverged' | 'full' | 'off' }.
    */
-  function match({ key, tag = '', hashes }) {
+  function match({ key, tag = '', hashes, freshChars = 0 }) {
     if (off) return { session: null, reason: 'off' };
     const t = now();
     let best = null;
@@ -92,7 +106,7 @@ function createSessionStore({ close = async () => {}, persist = null, now = Date
       if (s.busy || s.key !== key || s.tag !== tag) continue;
       const p = commonPrefix(s.hashes, hashes);
       if (p === s.hashes.length && hashes.length > p) {
-        if (s.chars >= cfg.maxChars || s.turns >= cfg.maxTurns) { full.push(s); continue; }
+        if (tooLong(s, freshChars)) { full.push(s); continue; }
         if (p > bestPrefix) { best = s; bestPrefix = p; }
       } else if (p > 1) sawPartial = true; // more than the system hash in common, but not all of it: the conversation was changed
     }

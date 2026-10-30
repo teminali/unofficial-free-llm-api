@@ -147,6 +147,73 @@ test('an agent with tools: the first request carries the system text and the too
   } finally { await t.close(); }
 });
 
+test('an agent task longer than the chat limit stays in one chat (a new chat would be told just as much), and each continued step reports what the chat held as cached input', async () => {
+  // What a coding agent sends: a long system prompt and tool list, then one tool step after another. Before 0.9.0 such a chat was "full" from its first
+  // request on, so every step opened a new chat that was told the whole conversation again (Lens through the bridge: 23 steps, cached 0).
+  const t = await boot({ sessionOptions: { maxChars: 2000, closeGapMs: 2 } });
+  try {
+    let step = 0;
+    const cities = ['Dar es Salaam', 'Arusha', 'Mwanza'];
+    t.state.reply = () => (++step < 4 ? `Step ${step}.\n<tool_call>{"name":"get_weather","arguments":{"city":"${cities[step - 1]}"}}</tool_call>` : 'It is sunny everywhere.');
+    const history = [{ role: 'system', content: `You are a weather assistant. ${'Follow the rules. '.repeat(200)}` }, user('Weather in four places?')];
+    const usages = [];
+    for (let i = 0; i < 4; i += 1) {
+      const data = await (await t.chat({ model: 'deepseek-chat', tools: WEATHER, messages: history })).json();
+      usages.push(data.usage);
+      const m = data.choices[0].message;
+      history.push(m);
+      if (m.tool_calls) history.push({ role: 'tool', tool_call_id: m.tool_calls[0].id, content: `${20 + i} C` });
+    }
+    assert.equal(t.state.created.length, 1, 'one chat for the whole task');
+    assert.deepEqual(t.state.completions.map((c) => c.parent), [null, 2, 4, 6]);
+    assert.ok(t.state.completions[0].prompt.length > 2000, 'the first prompt alone is past the limit');
+    assert.ok(t.state.completions.slice(1).every((c) => c.prompt.length < 200), 'later steps carry only the new tool result');
+    assert.equal(usages[0].prompt_tokens_details.cached_tokens, 0, 'a new chat holds nothing yet');
+    for (const u of usages.slice(1)) {
+      assert.ok(u.prompt_tokens_details.cached_tokens > 500, `cached ${u.prompt_tokens_details.cached_tokens}`);
+      assert.ok(u.prompt_tokens_details.cached_tokens < u.prompt_tokens, 'the new message is not cached');
+    }
+    assert.ok(usages[3].prompt_tokens_details.cached_tokens > usages[1].prompt_tokens_details.cached_tokens, 'the cached part grows with the chat');
+  } finally { await t.close(); }
+});
+
+test('streamed usage carries the cached input too (what an agent that streams reads)', async () => {
+  const t = await boot();
+  try {
+    t.state.reply = () => 'streamed answer';
+    const history = [user('first question, long enough to count')];
+    const usageOf = async () => {
+      const text = await (await t.chat({ model: 'deepseek-chat', stream: true, stream_options: { include_usage: true }, messages: history })).text();
+      const events = text.split('\n\n').map((b) => (b.split('\n').find((l) => l.startsWith('data: ')) || '').slice(6)).filter((e) => e && e !== '[DONE]').map((e) => JSON.parse(e));
+      return events.find((e) => e.usage).usage;
+    };
+    assert.equal((await usageOf()).prompt_tokens_details.cached_tokens, 0);
+    history.push({ role: 'assistant', content: 'streamed answer' }, user('second'));
+    assert.ok((await usageOf()).prompt_tokens_details.cached_tokens > 0);
+  } finally { await t.close(); }
+});
+
+test('the Anthropic and Responses APIs report a continued chat as cached input too', async () => {
+  const t = await boot();
+  try {
+    t.state.reply = () => 'an answer from the chat';
+    const post = (route, body) => fetch(`${t.base}${route}`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${t.key}` }, body: JSON.stringify(body) }).then((r) => r.json());
+    const msgs = [{ role: 'user', content: 'first question, long enough to count for something' }];
+    const a1 = await post('/v1/messages', { model: 'deepseek-chat', max_tokens: 100, messages: msgs });
+    assert.equal(a1.usage.cache_read_input_tokens, 0);
+    msgs.push({ role: 'assistant', content: 'an answer from the chat' }, { role: 'user', content: 'second' });
+    const a2 = await post('/v1/messages', { model: 'deepseek-chat', max_tokens: 100, messages: msgs });
+    assert.ok(a2.usage.cache_read_input_tokens > 0, JSON.stringify(a2.usage));
+    assert.ok(a2.usage.input_tokens < a2.usage.input_tokens + a2.usage.cache_read_input_tokens);
+    const input = [{ role: 'user', content: 'another question, long enough to count as well' }];
+    const r1 = await post('/v1/responses', { model: 'deepseek-chat', input });
+    assert.equal(r1.usage.input_tokens_details.cached_tokens, 0);
+    const r2 = await post('/v1/responses', { model: 'deepseek-chat', input: input.concat([{ role: 'assistant', content: 'an answer from the chat' }, { role: 'user', content: 'and again' }]) });
+    assert.ok(r2.usage.input_tokens_details.cached_tokens > 0, JSON.stringify(r2.usage));
+    assert.ok(r2.usage.input_tokens_details.cached_tokens <= r2.usage.input_tokens);
+  } finally { await t.close(); }
+});
+
 // ---- what is not a continuation -------------------------------------------------------------------------------------------------------------
 
 test('an edited earlier message, other tools, another system prompt and another model each start a new chat that is told everything', async () => {
@@ -353,8 +420,8 @@ test('only so many chats are kept open: a newer conversation pushes the one used
   } finally { await t.close(); }
 });
 
-test('a chat that has grown long is not continued: the conversation goes on in a new chat, and the long one is removed', async () => {
-  const t = await boot({ sessionOptions: { maxChars: 200, closeGapMs: 2 } });
+test('a chat that holds much more than a new chat would be told is not continued: the conversation goes on in a new chat, and the long one is removed', async () => {
+  const t = await boot({ sessionOptions: { maxChars: 200, maxOverhead: 0.5, closeGapMs: 2 } });
   try {
     t.state.reply = () => 'x'.repeat(300);
     const h = [];

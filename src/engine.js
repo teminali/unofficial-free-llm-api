@@ -312,7 +312,7 @@ function createChatEngine({ provider, governor = null, log = () => {}, onNotice 
       }
       // The turn has come: this is the first moment the sessions are in the state this request will find them (the request before it may just have ended).
       if (store && !(out && out.noticeKind)) {
-        const hit = store.match({ key: sessionKey, tag: sessionTag, hashes: [fp.system, ...fp.talk] });
+        const hit = store.match({ key: sessionKey, tag: sessionTag, hashes: [fp.system, ...fp.talk], freshChars: basePrompt.length });
         if (hit.session) {
           sess = hit.session;
           sessFrom = hit.from;
@@ -492,6 +492,8 @@ function createChatEngine({ provider, governor = null, log = () => {}, onNotice 
       return fail(502, `${p.id}_empty_answer`, `${p.name} sent no answer${emptyAnswers > 1 ? `, ${emptyAnswers} times` : ''} (after ${Math.round((Date.now() - started) / 1000)} s). Try the request again.`);
     }
     // The answer is good: the chat that gave it now holds this conversation, and the next request can carry on in it.
+    // What the chat already held of this conversation when it was continued: the caller is told it as cached input, the way an API with a prompt cache does.
+    const heldChars = store && out.remote && sess ? Math.max(0, basePrompt.length - prompt.length) : 0;
     if (store && out.remote) {
       const answered = B.fingerprint({ role: 'assistant', content: parsed.content || null, tool_calls: calls.map((c) => ({ id: c.id, type: 'function', function: { name: c.name, arguments: c.arguments } })) });
       if (sess) store.worked();
@@ -500,16 +502,19 @@ function createChatEngine({ provider, governor = null, log = () => {}, onNotice 
       out.remote = null;
     } else leaveSession();
     // The count is for the whole conversation, as the caller would be billed by any other API, whatever part of it the chat had to be told.
+    const promptTokens = estimateTokens(basePrompt.length);
     const usage = {
-      prompt_tokens: estimateTokens(basePrompt.length),
+      prompt_tokens: promptTokens,
       completion_tokens: estimateTokens(answerText.length) + estimateTokens((out.thinking || '').length),
       total_tokens: 0,
       ...(out.thinking ? { completion_tokens_details: { reasoning_tokens: estimateTokens(out.thinking.length) } } : {})
     };
     usage.total_tokens = usage.prompt_tokens + usage.completion_tokens;
+    // Always there, 0 for a new chat: a client that reads it sees whether its conversation was continued.
+    usage.prompt_tokens_details = { cached_tokens: Math.min(promptTokens, estimateTokens(heldChars)) };
     cleanup();
     const finishFor = () => (calls.length ? 'tool_calls' : (limitReason === 'length' ? 'length' : 'stop'));
-    const summary = { ok: true, status: 200, calls: calls.length, ms: Date.now() - started, chars: out.text.length, queueMs, firstMs: firstAt && slotAt ? firstAt - slotAt : 0 };
+    const summary = { ok: true, status: 200, cachedTokens: usage.prompt_tokens_details.cached_tokens, calls: calls.length, ms: Date.now() - started, chars: out.text.length, queueMs, firstMs: firstAt && slotAt ? firstAt - slotAt : 0 };
 
     if (!live) {
       sendJson(res, 200, completionBody({

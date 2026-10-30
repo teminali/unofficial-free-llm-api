@@ -196,6 +196,19 @@ function parseArguments(text) {
   try { const v = JSON.parse(text); return v && typeof v === 'object' && !Array.isArray(v) ? v : {}; } catch (_) { return {}; }
 }
 
+/** How much of the input the provider's chat already held (the engine's usage.prompt_tokens_details.cached_tokens: a continued chat), never more than the input. */
+function cachedOf(message, inputTokens) {
+  const u = message && message.usage;
+  const n = Number(u && u.prompt_tokens_details && u.prompt_tokens_details.cached_tokens) || 0;
+  return Math.max(0, Math.min(Number(inputTokens) || 0, n));
+}
+
+/** Anthropic's input counts: input_tokens is what was not read from the cache, cache_read_input_tokens what was. */
+function anthropicInput(message, inputTokens) {
+  const cached = cachedOf(message, inputTokens);
+  return { input_tokens: Math.max(0, inputTokens - cached), cache_creation_input_tokens: 0, cache_read_input_tokens: cached };
+}
+
 /** The finished Anthropic message for what the engine answered. */
 function anthropicMessage({ model, message, inputTokens }) {
   const content = [];
@@ -206,7 +219,7 @@ function anthropicMessage({ model, message, inputTokens }) {
   return {
     id: id('msg'), type: 'message', role: 'assistant', model, content,
     stop_reason: stopReason(message.finish), stop_sequence: null,
-    usage: { input_tokens: inputTokens, output_tokens: (message.usage && message.usage.completion_tokens) || estimateTokens(message.content.length + message.reasoning.length) }
+    usage: { ...anthropicInput(message, inputTokens), output_tokens: (message.usage && message.usage.completion_tokens) || estimateTokens(message.content.length + message.reasoning.length) }
   };
 }
 
@@ -234,7 +247,7 @@ function anthropicStream(res, { model, inputTokens }) {
     },
     finish(message) {
       close();
-      send('message_delta', { delta: { stop_reason: stopReason(message.finish), stop_sequence: null }, usage: { output_tokens: (message.usage && message.usage.completion_tokens) || estimateTokens(message.content.length + message.reasoning.length) } });
+      send('message_delta', { delta: { stop_reason: stopReason(message.finish), stop_sequence: null }, usage: { ...anthropicInput(message, inputTokens), output_tokens: (message.usage && message.usage.completion_tokens) || estimateTokens(message.content.length + message.reasoning.length) } });
       send('message_stop', {});
       res.end();
     },
@@ -336,7 +349,7 @@ function responseObject({ responseId, model, message, status = 'completed', crea
   const reasoningTokens = estimateTokens(message.reasoning.length);
   return {
     id: responseId, object: 'response', created_at: createdAt, status, model, output, parallel_tool_calls: true, tool_choice: 'auto', tools: [],
-    usage: { input_tokens: inputTokens, output_tokens: out, total_tokens: inputTokens + out, output_tokens_details: { reasoning_tokens: reasoningTokens }, input_tokens_details: { cached_tokens: 0 } }
+    usage: { input_tokens: inputTokens, output_tokens: out, total_tokens: inputTokens + out, output_tokens_details: { reasoning_tokens: reasoningTokens }, input_tokens_details: { cached_tokens: cachedOf(message, inputTokens) } }
   };
 }
 

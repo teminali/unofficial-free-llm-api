@@ -100,7 +100,9 @@ A web chat takes one text message and answers with text. For every request the b
 
 DeepSeek chats are removed when their conversation ends (20 minutes without a request, at most 6 open, or a chat grown long), and when the program stops. That covers the chats
 this program created; other DeepSeek chats are never touched. Qoder's chat is a live CLI process, held in memory and never on disk: the CLI is told not to persist a session,
-at most three chats are open, and each ends after ten idle minutes, twenty-four requests, or a grown transcript (150,000 characters). A request that changes the model, the effort,
+at most three chats are open, and each ends after ten idle minutes or twenty-four requests. A chat past 150,000 characters is replaced only when it holds clearly more than a new
+chat would be told, so an agent's long task stays in one chat (DeepSeek and Qoder alike). A continued request reports what its chat already held as cached input tokens
+(`usage.prompt_tokens_details.cached_tokens`; `cache_read_input_tokens` on the Anthropic API). A request that changes the model, the effort,
 the tools or an earlier message starts a new process. Name a conversation with the `user` field or an `X-ULA-Session` header if you want it kept apart. `--no-sessions`
 (or `ULA_SESSIONS=0`, or the switch on the Accounts page) goes back to one new chat for every request.
 

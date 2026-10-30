@@ -230,3 +230,25 @@ test('chats a killed run left behind are removed, one after the other, and a clo
   ready = true;
   assert.ok(await until(() => asked.includes('old-2')), 'the second is asked once the first is done');
 });
+
+test('a chat as long as the conversation it holds is never too long: a new chat would be told just as much', () => {
+  const { s, closed } = store({ maxChars: 100 });
+  s.commit({ key: KEY, hashes: ['sys', 'u1', 'a1'], remote: { id: 'agent' }, chars: 5000 });
+  const hit = s.match({ key: KEY, hashes: ['sys', 'u1', 'a1', 't1'], freshChars: 5100 });
+  assert.equal(hit.session && hit.session.remote.id, 'agent', `reason ${hit.reason}`);
+  s.commit({ session: hit.session, key: KEY, hashes: ['sys', 'u1', 'a1', 't1', 'a2'], remote: { id: 'agent' }, chars: 200 });
+  assert.equal(s.match({ key: KEY, hashes: ['sys', 'u1', 'a1', 't1', 'a2', 't2'], freshChars: 5300 }).session.remote.id, 'agent', 'and the step after');
+  assert.deepEqual(closed, []);
+});
+
+test('a chat that holds clearly more than a new chat would be told, or has answered maxTurns requests, is given up', () => {
+  const big = store({ maxChars: 100, maxOverhead: 1.5 });
+  big.s.commit({ key: KEY, hashes: ['sys', 'u1', 'a1'], remote: { id: 'big' }, chars: 9000 });
+  assert.equal(big.s.match({ key: KEY, hashes: ['sys', 'u1', 'a1', 'u2'], freshChars: 5000 }).reason, 'full');
+  const small = store({ maxChars: 100 });
+  small.s.commit({ key: KEY, hashes: ['sys', 'u1', 'a1'], remote: { id: 'small' }, chars: 50 });
+  assert.ok(small.s.match({ key: KEY, hashes: ['sys', 'u1', 'a1', 'u2'], freshChars: 10 }).session, 'under maxChars a chat is always continued');
+  const turns = store({ maxTurns: 1 });
+  turns.s.commit({ key: KEY, hashes: ['sys', 'u1', 'a1'], remote: { id: 't' }, chars: 10 });
+  assert.equal(turns.s.match({ key: KEY, hashes: ['sys', 'u1', 'a1', 'u2'], freshChars: 20 }).reason, 'full');
+});
