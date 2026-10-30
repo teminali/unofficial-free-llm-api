@@ -388,6 +388,8 @@ function createChatEngine({ provider, governor = null, log = () => {}, onNotice 
         if (incomplete.length) {
           unreadable += 1;
           log_(`tool calls without a required parameter: ${incomplete.join('; ').slice(0, 200)} (attempt ${attempt} of ${EMPTY_ANSWER_ATTEMPTS})`);
+          // how the call was written, so the shape a parser missed can be read and read right (the log stays in memory only): its first 400 characters
+          { const text = String(out.text || ''); const at = Math.max(0, text.search(/<tool_call>|<\s*(?:｜|\|)+\s*DSML|\{\s*"name"/i)); log_(`  as written: ${JSON.stringify(text.slice(at, at + 400))}`); }
           if (attempt < EMPTY_ANSWER_ATTEMPTS && !(gov && !gov.checkLimit().allowed)) {
             leaveSession();
             resetHold();

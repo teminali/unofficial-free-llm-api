@@ -629,7 +629,10 @@ function dsmlBlocks(source) {
 function callsInDsml(body, allowed) {
   // A model now and then closes a tag where it opens one ("</｜｜DSML｜｜ parameter name="x" ...>"). Read as an opening tag: otherwise the parameter
   // before it runs on to the next real closer, and its value swallows the rest of the call (a file path with markup in it, an edit that never lands).
-  const source = String(body || '').replace(new RegExp(`<\\s*\\/\\s*(${DSML_MARK}\\s*DSML\\s*${DSML_MARK}\\s*)(parameter|invoke)(\\s+name\\s*=)`, 'gi'), '<$1$2$3');
+  // And a parameter's tag that lost its "parameter name=" carries the name as its word ("<｜DSML｜｜ at string="true">", 2026-10-30, DeepSeek): it is
+  // read as that parameter, and asked for again it came back worse (the path as true).
+  const source = String(body || '').replace(new RegExp(`<\\s*\\/\\s*(${DSML_MARK}\\s*DSML\\s*${DSML_MARK}\\s*)(parameter|invoke)(\\s+name\\s*=)`, 'gi'), '<$1$2$3')
+    .replace(new RegExp(`<\\s*(${DSML_MARK}\\s*DSML\\s*${DSML_MARK}\\s*)(?!(?:parameter|invoke|calls|function_calls)\\b)([A-Za-z_][\\w-]*)(?=\\s+string\\s*=|\\s*>)`, 'g'), '<$1parameter name="$2"');
   const invoke = new RegExp(`<\\s*${DSML_MARK}\\s*DSML\\s*${DSML_MARK}\\s*invoke\\s+name\\s*=\\s*["']([^"']+)["']\\s*>([\\s\\S]*?)<\\/\\s*${DSML_MARK}\\s*DSML\\s*${DSML_MARK}\\s*invoke\\s*>`, 'gi');
   // A value ends at its own closing tag; a missing one ends it at the next parameter or invoke (a value that runs into the next tag belongs to neither).
   const nextTag = `<\\s*${DSML_MARK}\\s*DSML\\s*${DSML_MARK}\\s*(?:parameter|invoke)\\b`;
@@ -700,12 +703,74 @@ function missingOf(call, tools) {
   return required.filter((k) => args[k] == null || args[k] === '' || !ofType(args[k], props[k] && typeof props[k].type === 'string' ? props[k].type : null));
 }
 
-/** A call whose arguments lack a parameter its tool requires is mended where the rest of its object is in one value (unsquash); otherwise it is as it came. */
+/**
+ * A tool's own parameter written in another naming style ("file_path", "old-string", "FilePath" for filePath) is that parameter: DeepSeek writes
+ * snake_case out of habit, and an edit whose path came as "file_path" was asked for again and handed on without one (2026-10-30, Lens Code: four
+ * edits in a row "no usable filePath"). A key that is no parameter's name in any style is left as it came.
+ */
+const styleless = (k) => String(k).toLowerCase().replace(/[_\-\s]/g, '');
+function named(args, known) {
+  const byStyle = new Map([...known].map((k) => [styleless(k), k]));
+  let out = null;
+  for (const [k, v] of Object.entries(args)) {
+    const own = known.has(k) ? null : byStyle.get(styleless(k));
+    if (!own) continue;
+    const has = out ? out : args;
+    // already there under its own name (parseArgs copies the common ones over): the copy in the other style goes when it says the same
+    if (own in has && JSON.stringify(has[own]) !== JSON.stringify(v)) continue;
+    if (!out) out = { ...args };
+    out[own] = v;
+    delete out[k];
+  }
+  return out || args;
+}
+
+/**
+ * Arguments whose quotes were escaped partway (DeepSeek, 2026-10-30: `"filePath": "/w/page.css\",\"oldString\":\".l86 {...}\",", "newString": ...`,
+ * the path holding the next parameter, or two parameters made into one key) are read by the tool's own parameter names: each name is found at any
+ * level of escaping, its value runs to the next name, and it is unescaped once for each level its quotes were escaped at. Read from the arguments
+ * as written out again, which keep every name and value whatever object they parsed into. Only string values; null when no known name is found.
+ */
+function byNames(text, known) {
+  const source = String(text || '');
+  const marks = [];
+  for (const k of known) {
+    // the name's own quotes may sit at another level than its value's (a key that swallowed the next ones opens plain and closes escaped)
+    const re = new RegExp(`\\\\*"${k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\\\*"\\s*:\\s*(\\\\*)"`, 'g');
+    let m;
+    while ((m = re.exec(source))) marks.push({ k, level: m[1].length, start: m.index, from: m.index + m[0].length });
+  }
+  if (!marks.length) return null;
+  marks.sort((a, b) => a.start - b.start);
+  const out = {};
+  marks.forEach((mk, i) => {
+    let v = source.slice(mk.from, i + 1 < marks.length ? marks[i + 1].start : source.length);
+    // the separators that close a value before the next name (quotes at any level with the commas and colons between them: the end of a key that
+    // swallowed it, an empty value after), or the object's end after the last. A value of its own ending in a quote loses it here, in a call that
+    // could not be read at all otherwise
+    if (i + 1 < marks.length) v = v.replace(/(?:\\*"\s*[,:]?\s*)+$/, ''); else v = v.replace(/\\*"\s*}\s*}?\s*$/, '');
+    for (let l = 0; l <= mk.level; l += 1) { try { v = JSON.parse(`"${v}"`); } catch (_) { break; } }
+    if (!(mk.k in out)) out[mk.k] = v;
+  });
+  return out;
+}
+
+/**
+ * A call whose arguments lack a parameter its tool requires is mended where the rest of its object is in one value (unsquash), its names are in
+ * another style (named), or its quotes were escaped partway (byNames, taken only when it gives every required parameter); otherwise it is as it came.
+ */
 function mended(call, tools) {
   if (!missingOf(call, tools).length) return call;
   const args = parseArgs(call.arguments) || {};
-  const fixed = unsquash(args, paramsOf(tools, call.name).known);
-  return fixed === args ? call : { ...call, arguments: JSON.stringify(fixed) };
+  const { known } = paramsOf(tools, call.name);
+  const fixed = named(unsquash(args, known), known);
+  const done = fixed === args ? call : { ...call, arguments: JSON.stringify(fixed) };
+  if (!missingOf(done, tools).length) return done;
+  const read = byNames(typeof call.arguments === 'string' ? call.arguments : JSON.stringify(call.arguments || {}), known);
+  if (!read) return done;
+  const whole = { ...Object.fromEntries(Object.entries(fixed).filter(([k]) => known.has(k) && !(k in read))), ...read };
+  const again = { ...call, arguments: JSON.stringify(whole) };
+  return missingOf(again, tools).length ? done : again;
 }
 
 /**

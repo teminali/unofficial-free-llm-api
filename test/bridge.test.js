@@ -405,6 +405,44 @@ test('a call that still lacks a required parameter is named, so the bridge asks 
   assert.deepEqual(JSON.parse(require('../src/bridge').parseAnswer(json, SQUASH_TOOLS).calls[0].arguments), { filePath: 'p.json', oldString: '"a","b":1', newString: '"a","c":2' });
 });
 
+test('a parameter written in another naming style is the tool\'s own parameter, in the JSON and the DSML form alike', () => {
+  const { parseAnswer, incompleteCalls } = require('../src/bridge');
+  const D = '｜DSML｜';
+  const forms = [
+    '<tool_call>{"name":"edit","arguments":{"file_path":"/w/a.css","old_string":"a","new_string":"b"}}</tool_call>',
+    `<${D}calls><${D}invoke name="edit"><${D}parameter name="file_path" string="true">/w/a.css</${D}parameter><${D}parameter name="old_string" string="true">a</${D}parameter><${D}parameter name="new_string" string="true">b</${D}parameter></${D}invoke></${D}calls>`,
+    '<tool_call>{"name":"edit","arguments":{"FilePath":"/w/a.css","old-string":"a","NEW_STRING":"b"}}</tool_call>'
+  ];
+  for (const answer of forms) {
+    assert.deepEqual(incompleteCalls(answer, SQUASH_TOOLS), []);
+    assert.deepEqual(JSON.parse(parseAnswer(answer, SQUASH_TOOLS).calls[0].arguments), { filePath: '/w/a.css', oldString: 'a', newString: 'b' });
+  }
+  // a key that is no parameter's name in any style is left as it came
+  assert.deepEqual(JSON.parse(parseAnswer('<tool_call>{"name":"edit","arguments":{"filePath":"a","oldString":"x","newString":"y","replace_all":true}}</tool_call>', SQUASH_TOOLS).calls[0].arguments), { filePath: 'a', oldString: 'x', newString: 'y', replace_all: true });
+});
+
+test('arguments whose quotes were escaped partway are read by the tool\'s own parameter names, whatever level each sits at', () => {
+  const { parseAnswer, incompleteCalls } = require('../src/bridge');
+  const read = (answer) => { assert.deepEqual(incompleteCalls(answer, SQUASH_TOOLS), []); return JSON.parse(parseAnswer(answer, SQUASH_TOOLS).calls[0].arguments); };
+  // the path swallowed the next parameter, the last came as written (2026-10-30, run 48 on DeepSeek)
+  assert.deepEqual(read('<tool_call>{"name":"edit","arguments":{"filePath": "/w/styles/page.css\\",\\"oldString\\":\\".l86 { left: 618px; background: #fdf8cd; }\\",", "newString": ".l86 { left: 618px; background: #fef7cc; }"}}</tool_call>'),
+    { filePath: '/w/styles/page.css', oldString: '.l86 { left: 618px; background: #fdf8cd; }', newString: '.l86 { left: 618px; background: #fef7cc; }' });
+  // the first two parameters made into one key, quotes and a line break inside the values kept
+  assert.deepEqual(read('<tool_call>{"name":"edit","arguments":{"filePath\\":\\"/w/index.html\\",\\"oldString\\":\\"<span class=\\\\\\"a\\\\\\">x</span>": "", "newString": "<span class=\\"a\\">y</span>\\n<b>z</b>"}}</tool_call>'),
+    { filePath: '/w/index.html', oldString: '<span class="a">x</span>', newString: '<span class="a">y</span>\n<b>z</b>' });
+  // a well-formed call is never touched, a value ending in a brace or a quote included
+  assert.deepEqual(read('<tool_call>{"name":"edit","arguments":{"filePath":"a.css","oldString":".a { font-family: \\"Lato\\" }","newString":"b: \\"x\\""}}</tool_call>'), { filePath: 'a.css', oldString: '.a { font-family: "Lato" }', newString: 'b: "x"' });
+});
+
+test('a DSML tag named after one of the tool\'s parameters is that parameter, its own "parameter name=" left out', () => {
+  const { parseAnswer, incompleteCalls } = require('../src/bridge');
+  const tools = [{ type: 'function', function: { name: 'slice', parameters: { type: 'object', properties: { at: { type: 'string' }, lines: { type: 'string' } }, required: ['at'] } } }];
+  // as written (2026-10-30, run 50 on DeepSeek): the first parameter's tag lost its "parameter name=", and its closer its word
+  const answer = '<｜DSML｜｜ calls>\n<｜DSML｜｜ invoke name="slice">\n<｜DSML｜｜ at string="true">/w/index.html</｜｜DSML｜｜>\n<｜DSML｜｜ parameter name="lines" string="true">200-552</｜｜DSML｜｜>\n</｜DSML｜｜ invoke>\n</｜DSML｜｜ calls>';
+  assert.deepEqual(incompleteCalls(answer, tools), []);
+  assert.deepEqual(JSON.parse(parseAnswer(answer, tools).calls[0].arguments), { at: '/w/index.html', lines: '200-552' });
+});
+
 test('the tool rules say the arguments are an object and where escaping belongs', () => {
   const prompt = buildPrompt([{ role: 'user', content: 'hi' }], SQUASH_TOOLS);
   assert.match(prompt, /The arguments are a JSON object, never a string\. Escape a double quote or a line break only inside a string value/);
